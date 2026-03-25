@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+docs/
+*.md
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Test files
+test/
+tests/
+*_test.cpp
+*_test.h
+
+# Scripts (except build.sh)
+scripts/
+!build.sh
+
+# GitHub workflows
+.github/
+
+# Render configuration
+render.yaml
+
+# Docker files
+Dockerfile
+.dockerignore
