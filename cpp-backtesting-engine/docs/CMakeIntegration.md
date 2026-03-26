@@ -4,7 +4,7 @@
 
 ## Current release
 
-The recommended release tag is `v1.0.0`.
+The recommended release tag is `v1.0.1`.
 When using `FetchContent`, keep `GIT_TAG` set to the same version.
 
 ### Install (one-time)
@@ -35,7 +35,7 @@ include(FetchContent)
 FetchContent_Declare(
   backtesting_engine
   GIT_REPOSITORY https://github.com/Vins-z/Backtesting-Engine.git
-  GIT_TAG v1.0.0 # keep in sync with "Current release"
+  GIT_TAG v1.0.1 
 )
 
 FetchContent_MakeAvailable(backtesting_engine)
