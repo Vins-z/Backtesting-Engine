@@ -76,7 +76,7 @@ A high-performance C++ backtesting engine with HTTP API for algorithmic trading 
 ├── CMakeLists.txt           # Build configuration
 ├── build.sh                 # Build script
 ├── Dockerfile               # Container configuration
-└── render.yaml              # Render deployment config
+└── Dockerfile               # Container configuration
 ```
 
 ## Prerequisites
@@ -124,6 +124,114 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ctest --output-on-failure
 ```
+
+## Using as a C++ library (for third-party apps)
+
+This project exports a shared library target named `BacktestingEngine::backtesting_engine_shared`.
+
+### Current release
+
+Start by picking a single release tag/version for both:
+`FetchContent` (the `GIT_TAG`) and your installed artifacts used by `find_package`.
+
+At the moment, the recommended tag is `v1.0.0`.
+
+### Option A (Recommended): `find_package` after install
+
+Build + install:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/your/prefix
+cmake --build build -j
+cmake --install build
+```
+
+Build/install from the same release tag you selected above (currently `v1.0.0`).
+
+In your app’s `CMakeLists.txt`:
+
+```cmake
+find_package(BacktestingEngine CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE BacktestingEngine::backtesting_engine_shared)
+```
+
+If CMake can’t find the package automatically, configure one of:
+- `CMAKE_PREFIX_PATH` to include `/your/prefix`
+- `BacktestingEngine_DIR` to point at `${prefix}/lib/cmake/BacktestingEngine`
+
+The installed package version corresponds to the release tag you built (e.g. `v1.0.0`).
+
+### Option B: CMake `FetchContent` (no manual install)
+
+```cmake
+include(FetchContent)
+
+FetchContent_Declare(
+  backtesting_engine
+  GIT_REPOSITORY https://github.com/Vins-z/Backtesting-Engine.git
+  GIT_TAG v1.0.0 # keep in sync with "Current release"
+)
+
+FetchContent_MakeAvailable(backtesting_engine)
+
+target_link_libraries(your_target PRIVATE BacktestingEngine::backtesting_engine_shared)
+```
+
+Note: `FetchContent_MakeAvailable` expects `backtesting_engine_shared` to be available as a target after adding this project. (This is true for the current build.)
+
+### Option C: GitHub release tarball/zip
+
+Download the release tarball, extract it, and follow **Option A**:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/your/prefix
+cmake --build build -j
+cmake --install build
+```
+
+### Windows runtime note
+
+Because this library is a shared object, your application must be able to locate its runtime DLLs.
+After installing, ensure `%PATH%` includes `${prefix}/bin` (or copy the DLL next to your executable).
+
+### Minimal C++ usage
+
+```cpp
+#include "engine/backtest_engine.h"
+#include <iostream>
+
+int main() {
+  backtesting::BacktestConfig cfg{};
+  cfg.name = "example";
+  cfg.symbols = {"AAPL"};
+  cfg.start_date = "2024-01-01";
+  cfg.end_date = "2024-01-25";
+  cfg.initial_capital = 10000.0;
+  cfg.commission_rate = 0.001;
+  cfg.slippage_rate = 0.0005;
+  cfg.data_source = "csv";
+  cfg.data_path = "data/sp500";
+  cfg.data_interval = "1d";
+  cfg.strategy_name = "moving_average";
+  cfg.strategy_params = {{"short_window", 5}, {"long_window", 10}};
+
+  auto engine = backtesting::BacktestEngine::create_from_config(cfg);
+  auto result = engine->run_backtest();
+  std::cout << result.to_json().dump(2) << std::endl;
+  return 0;
+}
+```
+
+## Using the C API (for bindings)
+
+The shared library exports a tiny C API in `include/c_api/backtest_c.h`:
+
+- `bt_create_from_config_json(const char*)`
+- `bt_run_to_result_json(BacktestEngineHandle*)`
+- `bt_free_string(char*)`
+- `bt_destroy(BacktestEngineHandle*)`
+
+Full JSON key reference + C examples are documented in `docs/C_API.md`.
 
 ## Usage
 
@@ -213,19 +321,21 @@ docker run -p 8080:8080 backtesting-engine
 
 ## Deployment
 
-### Render (Recommended)
+### Docker / container deployment
 
-1. Connect your repository to Render
-2. The service will automatically deploy using the `render.yaml` configuration
-3. Set environment variables in Render dashboard
+The backend can be deployed anywhere that supports Docker:
 
-### Other Platforms
-
-The backend can be deployed on any platform that supports Docker:
 - Google Cloud Run
 - AWS ECS
 - DigitalOcean App Platform
 - Railway
+
+You can also build and run locally:
+
+```bash
+docker build -t backtesting-engine .
+docker run -p 8080:8080 backtesting-engine
+```
 
 ## Development
 

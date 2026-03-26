@@ -2393,12 +2393,12 @@ private:
                  << "</ul>\n</section>\n"
                  << "<section>\n<h3>Test Commands</h3>\n"
                  << "<p><strong>Market Data:</strong></p>\n"
-                 << "<pre><code>curl https://backtesting-2w2g.onrender.com/api/market-data/NKE</code></pre>\n"
+                 << "<pre><code>curl http://localhost:${PORT:-8080}/api/market-data/NKE</code></pre>\n"
                  << "<p><strong>Backtest</strong></p>\n"
-                 << "<pre><code>curl -X POST https://backtesting-2w2g.onrender.com/backtest -H 'Content-Type: application/json' -d '{\n"
+                 << "<pre><code>curl -X POST http://localhost:${PORT:-8080}/backtest -H 'Content-Type: application/json' -d '{\n"
                  << "  \"symbol\": \"AAPL\",\n  \"start_date\": \"2024-01-01\",\n  \"end_date\": \"2024-12-31\",\n  \"initial_capital\": 10000,\n  \"strategy\": {\n    \"indicators\": [{ \"type\": \"SMA\", \"length\": 20 }]\n  }\n}'</code></pre>\n"
                  << "<p><strong>Health Check:</strong></p>\n"
-                 << "<pre><code>curl https://backtesting-2w2g.onrender.com/health</code></pre>\n"
+                 << "<pre><code>curl http://localhost:${PORT:-8080}/health</code></pre>\n"
                  << "</section>\n"
                  << "</body></html>\n";
             response = create_response(200, "OK", "text/html; charset=utf-8", html.str());

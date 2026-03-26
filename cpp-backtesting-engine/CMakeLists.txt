@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 # Use dynamic libraries for deployment to avoid complex dependency issues
 # Static linking causes too many missing dependency issues with curl
 set(CMAKE_FIND_LIBRARY_SUFFIXES .so .dylib ${CMAKE_FIND_LIBRARY_SUFFIXES})
@@ -89,7 +92,7 @@ if(TALIB_INCLUDE_DIR)
 endif()
 
 # Library source files
-set(LIB_SOURCES
+set(CORE_SOURCES
     src/context/regime_classifier.cpp
     src/engine/backtest_engine.cpp
     src/strategy/strategy.cpp
@@ -120,37 +123,68 @@ set(LIB_SOURCES
     src/risk/risk_manager.cpp
     src/risk/advanced_risk_manager.cpp
     src/performance/performance_analyzer.cpp
+)
+
+# C API wrapper (optional but built by default for easier bindings)
+list(APPEND CORE_SOURCES
+    src/c_api/backtest_c.cpp
+)
+
+# CLI sources (kept out of the shared library target)
+set(CLI_SOURCES
     src/cli/cli.cpp
 )
 
 # Header files
 file(GLOB_RECURSE HEADERS "include/*.h")
 
-# Create the main executable
-add_executable(backtest_engine 
-    src/main.cpp 
-    ${LIB_SOURCES} 
-    ${HEADERS}
+# Shared library target (requested)
+add_library(backtesting_engine_shared SHARED
+    ${CORE_SOURCES}
 )
 
-# Link libraries
-target_link_libraries(backtest_engine 
-    PRIVATE 
-    Eigen3::Eigen 
-    spdlog::spdlog 
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    pthread
+add_library(BacktestingEngine::backtesting_engine_shared ALIAS backtesting_engine_shared)
+
+target_include_directories(backtesting_engine_shared
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-# Link TA-Lib if available
+target_link_libraries(backtesting_engine_shared
+    PUBLIC
+        Eigen3::Eigen
+        spdlog::spdlog
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        ${CURL_LIBRARIES}
+        ${YAML_CPP_LIBRARIES}
+        pthread
+)
+
 if(HAS_TALIB)
-    target_link_libraries(backtest_engine PRIVATE ${TALIB_LIBRARY})
-    target_compile_definitions(backtest_engine PRIVATE HAS_TALIB)
+    target_link_libraries(backtesting_engine_shared PRIVATE ${TALIB_LIBRARY})
+    target_compile_definitions(backtesting_engine_shared PRIVATE HAS_TALIB)
 endif()
 
-# Compiler flags
+target_compile_options(backtesting_engine_shared PRIVATE
+    -Wall -Wextra -O3 -march=native -fPIC
+)
+
+set_target_properties(backtesting_engine_shared PROPERTIES
+    OUTPUT_NAME backtesting_engine
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 1
+)
+
+# CLI executable
+add_executable(backtest_engine
+    src/main.cpp
+    ${CLI_SOURCES}
+)
+
+target_link_libraries(backtest_engine PRIVATE BacktestingEngine::backtesting_engine_shared)
+
 target_compile_options(backtest_engine PRIVATE 
     -Wall -Wextra -O3 -march=native -fPIC
 )
@@ -163,23 +197,16 @@ set_target_properties(backtest_engine PROPERTIES
 # HTTP Server executable for deployment
 add_executable(backtest_server
     src/server.cpp
-    ${LIB_SOURCES}
 )
 
-target_link_libraries(backtest_server 
-    PRIVATE 
-    Eigen3::Eigen 
-    spdlog::spdlog 
+target_link_libraries(backtest_server PRIVATE BacktestingEngine::backtesting_engine_shared)
+
+# `server.cpp` directly uses libcurl entry points, so link curl explicitly.
+target_link_libraries(backtest_server PRIVATE
     ${CURL_LIBRARIES}
     ${YAML_CPP_LIBRARIES}
-    nlohmann_json::nlohmann_json
     pthread
 )
-
-if(HAS_TALIB)
-    target_link_libraries(backtest_server PRIVATE ${TALIB_LIBRARY})
-    target_compile_definitions(backtest_server PRIVATE HAS_TALIB)
-endif()
 
 # Compiler flags for server
 target_compile_options(backtest_server PRIVATE 
@@ -193,12 +220,12 @@ set_target_properties(backtest_server PROPERTIES
 
 add_executable(test_csv_date_filter
     tests/csv_data_handler_date_filter_test.cpp
-    ${LIB_SOURCES}
+    ${CORE_SOURCES}
 )
 
 add_executable(test_risk_exposure_units
     tests/risk_exposure_units_test.cpp
-    ${LIB_SOURCES}
+    ${CORE_SOURCES}
 )
 
 target_link_libraries(test_csv_date_filter
@@ -224,9 +251,51 @@ target_link_libraries(test_risk_exposure_units
 add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
 add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
 
-# Install targets
-install(TARGETS backtest_engine backtest_server
-    RUNTIME DESTINATION bin
+# Examples
+option(BACKTESTINGENGINE_BUILD_EXAMPLES "Build example programs" ON)
+if(BACKTESTINGENGINE_BUILD_EXAMPLES)
+    add_executable(example_yfinance_usage examples/yfinance_usage_example.cpp)
+    target_link_libraries(example_yfinance_usage PRIVATE BacktestingEngine::backtesting_engine_shared)
+
+    add_executable(example_csv_library_usage examples/csv_library_usage_example.cpp)
+    target_link_libraries(example_csv_library_usage PRIVATE BacktestingEngine::backtesting_engine_shared)
+endif()
+
+# Install library + headers + executables
+install(TARGETS backtesting_engine_shared backtest_engine backtest_server
+    EXPORT BacktestingEngineTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# CMake package export (find_package)
+install(EXPORT BacktestingEngineTargets
+    NAMESPACE BacktestingEngine::
+    FILE BacktestingEngineTargets.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/BacktestingEngine
+)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/BacktestingEngineConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/BacktestingEngineConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/BacktestingEngine
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/BacktestingEngineConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/BacktestingEngineConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/BacktestingEngineConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/BacktestingEngine
 )
 
 # CPack configuration

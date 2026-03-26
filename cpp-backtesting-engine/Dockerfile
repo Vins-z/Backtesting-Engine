@@ -1,4 +1,4 @@
-# Multi-stage build for C++ Backtesting Engine (Render Optimized)
+# Multi-stage build for C++ Backtesting Engine (Docker optimized)
 FROM ubuntu:22.04 as builder
 
 # Set environment variables
@@ -157,10 +157,10 @@ RUN ldd ./backtest_server || echo "ldd failed, but continuing..."
 # Switch to non-root user
 USER backtest
 
-# Expose port (Render will set PORT environment variable)
+# Expose port
 EXPOSE 8080
 
-# Health check optimized for Render
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f -s -m 5 http://localhost:${PORT:-8080}/health | grep -q '"status":"healthy"' || exit 1
 
