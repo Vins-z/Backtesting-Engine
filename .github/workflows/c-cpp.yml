@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: C/C++ CMake CI
 
 on:
   push:
@@ -17,21 +17,43 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          build-essential cmake pkg-config \
+          build-essential \
+          cmake \
+          pkg-config \
           libyaml-cpp-dev \
           nlohmann-json3-dev \
           libspdlog-dev \
           libcurl4-openssl-dev \
           libeigen3-dev
 
+        # Optional (indicators may be unavailable if missing)
+        sudo apt-get install -y libta-lib-dev || true
+
+    - name: Detect source directory
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -d "${{ github.workspace }}/cpp-backtesting-engine" ]; then
+          SRC_DIR="${{ github.workspace }}/cpp-backtesting-engine"
+        elif [ -d "${{ github.workspace }}/Backtesting/cpp-backtesting-engine" ]; then
+          SRC_DIR="${{ github.workspace }}/Backtesting/cpp-backtesting-engine"
+        else
+          echo "Could not find cpp-backtesting-engine in repo."
+          ls -la "${{ github.workspace }}"
+          exit 1
+        fi
+
+        BUILD_DIR="${SRC_DIR}/build-ci"
+
+        echo "SRC_DIR=$SRC_DIR" >> "$GITHUB_ENV"
+        echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+
     - name: Configure
-      working-directory: Backtesting/cpp-backtesting-engine
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
-      working-directory: Backtesting/cpp-backtesting-engine
-      run: cmake --build build -j --config Release
+      run: cmake --build "${BUILD_DIR}" -j --config Release
 
     - name: Test
-      working-directory: Backtesting/cpp-backtesting-engine
-      run: ctest --test-dir build --output-on-failure
+      run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
