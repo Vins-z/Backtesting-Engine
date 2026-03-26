@@ -15,7 +15,6 @@ include(CMakePackageConfigHelpers)
 set(CMAKE_FIND_LIBRARY_SUFFIXES .so .dylib ${CMAKE_FIND_LIBRARY_SUFFIXES})
 
 # Find required packages
-find_package(PkgConfig REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 # Set Homebrew paths for macOS
@@ -36,18 +35,10 @@ else()
     find_package(spdlog REQUIRED)
 endif()
 
-# Force dynamic curl linking to avoid static dependency issues
-pkg_check_modules(CURL REQUIRED libcurl)
-# Ensure we use shared libraries
-set(CURL_LIBRARIES ${CURL_LINK_LIBRARIES})
-message(STATUS "CURL_LIBRARIES: ${CURL_LIBRARIES}")
-message(STATUS "CURL_INCLUDE_DIRS: ${CURL_INCLUDE_DIRS}")
-message(STATUS "CURL_LIBRARY_DIRS: ${CURL_LIBRARY_DIRS}")
-
-# Find yaml-cpp
-pkg_check_modules(YAML_CPP REQUIRED yaml-cpp)
-link_directories(${YAML_CPP_LIBRARY_DIRS})
-link_directories(${CURL_LIBRARY_DIRS})
+# Find dependencies via CMake packages (vcpkg/Windows friendly)
+find_package(CURL REQUIRED)
+find_package(yaml-cpp CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 # Find nlohmann/json
 find_package(nlohmann_json REQUIRED CONFIG)
@@ -81,14 +72,6 @@ else()
     message(WARNING "TALIB_LIBRARY: ${TALIB_LIBRARY}")
     message(WARNING "TALIB_INCLUDE_DIR: ${TALIB_INCLUDE_DIR}")
     set(HAS_TALIB FALSE)
-endif()
-
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${YAML_CPP_INCLUDE_DIRS})
-include_directories(${CURL_INCLUDE_DIRS})
-if(TALIB_INCLUDE_DIR)
-    include_directories(${TALIB_INCLUDE_DIR})
 endif()
 
 # Library source files
@@ -157,18 +140,19 @@ target_link_libraries(backtesting_engine_shared
         spdlog::spdlog
         nlohmann_json::nlohmann_json
     PRIVATE
-        ${CURL_LIBRARIES}
-        ${YAML_CPP_LIBRARIES}
-        pthread
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        Threads::Threads
 )
 
 if(HAS_TALIB)
     target_link_libraries(backtesting_engine_shared PRIVATE ${TALIB_LIBRARY})
     target_compile_definitions(backtesting_engine_shared PRIVATE HAS_TALIB)
+    target_include_directories(backtesting_engine_shared PRIVATE ${TALIB_INCLUDE_DIR})
 endif()
 
 target_compile_options(backtesting_engine_shared PRIVATE
-    -Wall -Wextra -O3 -march=native -fPIC
+    -Wall -Wextra -O3 -fPIC
 )
 
 set_target_properties(backtesting_engine_shared PROPERTIES
@@ -186,7 +170,7 @@ add_executable(backtest_engine
 target_link_libraries(backtest_engine PRIVATE BacktestingEngine::backtesting_engine_shared)
 
 target_compile_options(backtest_engine PRIVATE 
-    -Wall -Wextra -O3 -march=native -fPIC
+    -Wall -Wextra -O3 -fPIC
 )
 
 # Set runtime path for shared libraries
@@ -203,14 +187,14 @@ target_link_libraries(backtest_server PRIVATE BacktestingEngine::backtesting_eng
 
 # `server.cpp` directly uses libcurl entry points, so link curl explicitly.
 target_link_libraries(backtest_server PRIVATE
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
-    pthread
+    CURL::libcurl
+    yaml-cpp::yaml-cpp
+    Threads::Threads
 )
 
 # Compiler flags for server
 target_compile_options(backtest_server PRIVATE 
-    -Wall -Wextra -O3 -march=native -fPIC
+    -Wall -Wextra -O3 -fPIC
 )
 
 # Set runtime path for shared libraries
@@ -228,24 +212,31 @@ add_executable(test_risk_exposure_units
     ${CORE_SOURCES}
 )
 
+target_include_directories(test_csv_date_filter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_include_directories(test_risk_exposure_units PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 target_link_libraries(test_csv_date_filter
     PRIVATE
     Eigen3::Eigen
     spdlog::spdlog
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
+    CURL::libcurl
+    yaml-cpp::yaml-cpp
     nlohmann_json::nlohmann_json
-    pthread
+    Threads::Threads
 )
 
 target_link_libraries(test_risk_exposure_units
     PRIVATE
     Eigen3::Eigen
     spdlog::spdlog
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
+    CURL::libcurl
+    yaml-cpp::yaml-cpp
     nlohmann_json::nlohmann_json
-    pthread
+    Threads::Threads
 )
 
 add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
