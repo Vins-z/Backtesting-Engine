@@ -1,6 +1,6 @@
 # Backtesting Engine
 
-Production-grade C++ backtesting engine focused on correctness, reproducibility, and performance.
+C++ backtesting engine focused on correctness, reproducibility, and performance.
 
 ## Components
 
