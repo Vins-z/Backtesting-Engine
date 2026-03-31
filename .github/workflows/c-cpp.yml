@@ -46,7 +46,7 @@ jobs:
         echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
 
     - name: Configure
-      run: cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release -DBACKTESTINGENGINE_BUILD_EXAMPLES=OFF
+      run: cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release -DBACKTESTINGENGINE_BUILD_EXAMPLES=OFF -DBACKTESTINGENGINE_BUILD_TESTS=OFF
 
     - name: Build
       # Use low parallelism to avoid OOM/killed compiler on GitHub runners
