@@ -54,3 +54,12 @@ jobs:
 
     - name: Test
       run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
+
+    - name: Install (for consumer test)
+      run: cmake --install "${BUILD_DIR}" --prefix "${BUILD_DIR}/install"
+
+    - name: Configure consumer (find_package)
+      run: cmake -S "${SRC_DIR}/consumer" -B "${BUILD_DIR}/consumer-build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${BUILD_DIR}/install"
+
+    - name: Build consumer
+      run: cmake --build "${BUILD_DIR}/consumer-build" --parallel 2 --config Release

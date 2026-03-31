@@ -4,10 +4,10 @@ All notable changes to this project should be documented here.
 
 ## Unreleased
 
-- Removed frontend and moved to backend-first repository shape.
-- Removed Python engine and standardized repo to C++ backend only.
-- Renamed backend folder to `cpp-backtesting-engine` for clearer project structure.
-- Added backend CI and sanitizer build checks.
-- Fixed key correctness issues in threading, risk units, CSV date filtering, and async lifecycle.
-- Exposed `cpp-backtesting-engine` as an installable shared library via CMake `find_package`, added a minimal C JSON API wrapper, and published public integration docs + examples.
-- Removed Render deployment artifacts/instructions to keep deployments platform-agnostic.
+- (next) CMake: vcpkg-friendly dependency discovery (`find_package`), optional TA-Lib, and consumer CI verification.
+
+## 1.0.1
+
+- CMake `find_package` export with `BacktestingEngine::backtesting_engine_shared`
+- Minimal C API wrapper (`include/c_api/backtest_c.h`) documented under `cpp-backtesting-engine/docs/`
+- Ongoing correctness + stability fixes (risk units, CSV date filtering, async lifecycle)

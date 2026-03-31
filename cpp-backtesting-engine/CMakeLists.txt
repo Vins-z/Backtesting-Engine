@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BacktestingEngine VERSION 1.0.0 LANGUAGES CXX)
+project(BacktestingEngine VERSION 1.0.1 LANGUAGES CXX)
 enable_testing()
 
 # Set C++20 standard
@@ -10,16 +10,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-# Use dynamic libraries for deployment to avoid complex dependency issues
-# Static linking causes too many missing dependency issues with curl
-set(CMAKE_FIND_LIBRARY_SUFFIXES .so .dylib ${CMAKE_FIND_LIBRARY_SUFFIXES})
+function(be_target_compile_options name)
+    target_compile_options(${name} PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wall;-Wextra;-fPIC>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4>
+    )
+endfunction()
 
 # Find required packages
-find_package(PkgConfig REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(nlohmann_json REQUIRED CONFIG)
+find_package(spdlog REQUIRED CONFIG)
+find_package(CURL REQUIRED)
+find_package(yaml-cpp CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
-# Set Homebrew paths for macOS
-if(APPLE)
+# Set Homebrew paths for macOS (skip when building under vcpkg)
+if(APPLE AND NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(HOMEBREW_PREFIX "/opt/homebrew")
     set(CMAKE_PREFIX_PATH "${HOMEBREW_PREFIX}" ${CMAKE_PREFIX_PATH})
     set(CMAKE_LIBRARY_PATH "${HOMEBREW_PREFIX}/lib" ${CMAKE_LIBRARY_PATH})
@@ -27,68 +34,22 @@ if(APPLE)
     message(STATUS "Using Homebrew prefix: ${HOMEBREW_PREFIX}")
 endif()
 
-# Try to find spdlog with dynamic linking preference
-find_package(spdlog REQUIRED CONFIG)
-if(spdlog_FOUND)
-    message(STATUS "Found spdlog: ${spdlog_DIR}")
+# Optional TA-Lib
+option(BACKTESTINGENGINE_ENABLE_TALIB "Find and link optional TA-Lib" ON)
+if(BACKTESTINGENGINE_ENABLE_TALIB)
+    find_library(TALIB_LIBRARY NAMES ta_lib ta_lib_csr ta_common ta_abstract)
+    find_path(TALIB_INCLUDE_DIR ta_libc.h)
+
+    if(TALIB_LIBRARY AND TALIB_INCLUDE_DIR)
+        set(HAS_TALIB TRUE)
+        message(STATUS "TA-Lib found: ${TALIB_LIBRARY}")
+    else()
+        set(HAS_TALIB FALSE)
+        message(STATUS "TA-Lib not found; building without it (some indicators are gated).")
+    endif()
 else()
-    # Fallback: try to find spdlog as a regular package
-    find_package(spdlog REQUIRED)
-endif()
-
-# Force dynamic curl linking to avoid static dependency issues
-pkg_check_modules(CURL REQUIRED libcurl)
-# Ensure we use shared libraries
-set(CURL_LIBRARIES ${CURL_LINK_LIBRARIES})
-message(STATUS "CURL_LIBRARIES: ${CURL_LIBRARIES}")
-message(STATUS "CURL_INCLUDE_DIRS: ${CURL_INCLUDE_DIRS}")
-message(STATUS "CURL_LIBRARY_DIRS: ${CURL_LIBRARY_DIRS}")
-
-# Find yaml-cpp
-pkg_check_modules(YAML_CPP REQUIRED yaml-cpp)
-link_directories(${YAML_CPP_LIBRARY_DIRS})
-link_directories(${CURL_LIBRARY_DIRS})
-
-# Find nlohmann/json
-find_package(nlohmann_json REQUIRED CONFIG)
-
-# Find TA-Lib with better detection
-find_library(TALIB_LIBRARY NAMES ta_lib ta_lib_csr ta_common ta_abstract)
-find_path(TALIB_INCLUDE_DIR ta_libc.h
-    PATHS
-    /usr/include
-    /usr/local/include
-    /opt/local/include
-    /sw/include
-)
-
-# If TA-Lib is not found, try to find it in standard locations
-if(NOT TALIB_LIBRARY)
-    find_library(TALIB_LIBRARY NAMES ta_lib PATHS /usr/lib /usr/local/lib /opt/local/lib /sw/lib)
-endif()
-
-if(NOT TALIB_INCLUDE_DIR)
-    find_path(TALIB_INCLUDE_DIR ta_libc.h PATHS /usr/include /usr/local/include /opt/local/include /sw/include)
-endif()
-
-# Check if TA-Lib is available
-if(TALIB_LIBRARY AND TALIB_INCLUDE_DIR)
-    message(STATUS "TA-Lib found: ${TALIB_LIBRARY}")
-    message(STATUS "TA-Lib include dir: ${TALIB_INCLUDE_DIR}")
-    set(HAS_TALIB TRUE)
-else()
-    message(WARNING "TA-Lib not found. Some technical indicators may not be available.")
-    message(WARNING "TALIB_LIBRARY: ${TALIB_LIBRARY}")
-    message(WARNING "TALIB_INCLUDE_DIR: ${TALIB_INCLUDE_DIR}")
     set(HAS_TALIB FALSE)
-endif()
-
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${YAML_CPP_INCLUDE_DIRS})
-include_directories(${CURL_INCLUDE_DIRS})
-if(TALIB_INCLUDE_DIR)
-    include_directories(${TALIB_INCLUDE_DIR})
+    message(STATUS "TA-Lib disabled (BACKTESTINGENGINE_ENABLE_TALIB=OFF)")
 endif()
 
 # Library source files
@@ -157,19 +118,18 @@ target_link_libraries(backtesting_engine_shared
         spdlog::spdlog
         nlohmann_json::nlohmann_json
     PRIVATE
-        ${CURL_LIBRARIES}
-        ${YAML_CPP_LIBRARIES}
-        pthread
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        Threads::Threads
 )
 
 if(HAS_TALIB)
     target_link_libraries(backtesting_engine_shared PRIVATE ${TALIB_LIBRARY})
     target_compile_definitions(backtesting_engine_shared PRIVATE HAS_TALIB)
+    target_include_directories(backtesting_engine_shared PRIVATE ${TALIB_INCLUDE_DIR})
 endif()
 
-target_compile_options(backtesting_engine_shared PRIVATE
-    -Wall -Wextra -O3 -march=native -fPIC
-)
+be_target_compile_options(backtesting_engine_shared)
 
 set_target_properties(backtesting_engine_shared PROPERTIES
     OUTPUT_NAME backtesting_engine
@@ -177,82 +137,89 @@ set_target_properties(backtesting_engine_shared PROPERTIES
     SOVERSION 1
 )
 
-# CLI executable
-add_executable(backtest_engine
-    src/main.cpp
-    ${CLI_SOURCES}
-)
+# Build toggles (library vs tools/tests/examples)
+set(_be_default_on_if_top OFF)
+if(PROJECT_IS_TOP_LEVEL)
+    set(_be_default_on_if_top ON)
+endif()
 
-target_link_libraries(backtest_engine PRIVATE BacktestingEngine::backtesting_engine_shared)
+option(BACKTESTINGENGINE_BUILD_TOOLS "Build CLI/server executables" ${_be_default_on_if_top})
+option(BACKTESTINGENGINE_BUILD_TESTS "Build unit tests" ${_be_default_on_if_top})
+option(BACKTESTINGENGINE_BUILD_EXAMPLES "Build example programs" ${_be_default_on_if_top})
 
-target_compile_options(backtest_engine PRIVATE 
-    -Wall -Wextra -O3 -march=native -fPIC
-)
+if(BACKTESTINGENGINE_BUILD_TOOLS)
+    # CLI executable
+    add_executable(backtest_engine
+        src/main.cpp
+        ${CLI_SOURCES}
+    )
 
-# Set runtime path for shared libraries
-set_target_properties(backtest_engine PROPERTIES
-    INSTALL_RPATH_USE_LINK_PATH TRUE
-)
+    target_link_libraries(backtest_engine PRIVATE BacktestingEngine::backtesting_engine_shared)
+    be_target_compile_options(backtest_engine)
 
-# HTTP Server executable for deployment
-add_executable(backtest_server
-    src/server.cpp
-)
+    # Set runtime path for shared libraries
+    set_target_properties(backtest_engine PROPERTIES
+        INSTALL_RPATH_USE_LINK_PATH TRUE
+    )
 
-target_link_libraries(backtest_server PRIVATE BacktestingEngine::backtesting_engine_shared)
+    # HTTP Server executable for deployment
+    add_executable(backtest_server
+        src/server.cpp
+    )
 
-# `server.cpp` directly uses libcurl entry points, so link curl explicitly.
-target_link_libraries(backtest_server PRIVATE
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
-    pthread
-)
+    target_link_libraries(backtest_server PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-# Compiler flags for server
-target_compile_options(backtest_server PRIVATE 
-    -Wall -Wextra -O3 -march=native -fPIC
-)
+    # `server.cpp` directly uses libcurl entry points, so link curl explicitly.
+    target_link_libraries(backtest_server PRIVATE
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        Threads::Threads
+    )
 
-# Set runtime path for shared libraries
-set_target_properties(backtest_server PROPERTIES
-    INSTALL_RPATH_USE_LINK_PATH TRUE
-)
+    be_target_compile_options(backtest_server)
 
-add_executable(test_csv_date_filter
-    tests/csv_data_handler_date_filter_test.cpp
-    ${CORE_SOURCES}
-)
+    # Set runtime path for shared libraries
+    set_target_properties(backtest_server PROPERTIES
+        INSTALL_RPATH_USE_LINK_PATH TRUE
+    )
+endif()
 
-add_executable(test_risk_exposure_units
-    tests/risk_exposure_units_test.cpp
-    ${CORE_SOURCES}
-)
+if(BACKTESTINGENGINE_BUILD_TESTS)
+    add_executable(test_csv_date_filter
+        tests/csv_data_handler_date_filter_test.cpp
+        ${CORE_SOURCES}
+    )
 
-target_link_libraries(test_csv_date_filter
-    PRIVATE
-    Eigen3::Eigen
-    spdlog::spdlog
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    pthread
-)
+    add_executable(test_risk_exposure_units
+        tests/risk_exposure_units_test.cpp
+        ${CORE_SOURCES}
+    )
 
-target_link_libraries(test_risk_exposure_units
-    PRIVATE
-    Eigen3::Eigen
-    spdlog::spdlog
-    ${CURL_LIBRARIES}
-    ${YAML_CPP_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    pthread
-)
+    target_link_libraries(test_csv_date_filter
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
 
-add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
-add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
+    target_link_libraries(test_risk_exposure_units
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
+    add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
+    add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
+endif()
 
 # Examples
-option(BACKTESTINGENGINE_BUILD_EXAMPLES "Build example programs" ON)
 if(BACKTESTINGENGINE_BUILD_EXAMPLES)
     add_executable(example_yfinance_usage examples/yfinance_usage_example.cpp)
     target_link_libraries(example_yfinance_usage PRIVATE BacktestingEngine::backtesting_engine_shared)
@@ -262,12 +229,18 @@ if(BACKTESTINGENGINE_BUILD_EXAMPLES)
 endif()
 
 # Install library + headers + executables
-install(TARGETS backtesting_engine_shared backtest_engine backtest_server
+install(TARGETS backtesting_engine_shared
     EXPORT BacktestingEngineTargets
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(BACKTESTINGENGINE_BUILD_TOOLS)
+    install(TARGETS backtest_engine backtest_server
+        EXPORT BacktestingEngineTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
