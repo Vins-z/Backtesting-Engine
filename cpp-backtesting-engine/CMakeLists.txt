@@ -195,6 +195,11 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
         ${CORE_SOURCES}
     )
 
+    # Tests are built from standalone translation units (they don't automatically
+    # pick up include paths from the shared library target since they link none).
+    target_include_directories(test_csv_date_filter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_risk_exposure_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
     target_link_libraries(test_csv_date_filter
         PRIVATE
         Eigen3::Eigen
