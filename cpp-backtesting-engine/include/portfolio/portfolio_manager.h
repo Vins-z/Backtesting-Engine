@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <deque>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
@@ -130,6 +131,15 @@ private:
     std::vector<Fill> trade_history_;
     std::vector<std::pair<Timestamp, Price>> equity_curve_;
     std::vector<std::pair<Timestamp, Price>> drawdown_curve_;
+
+    // Lot ledger for correct realized P&L (FIFO)
+    struct Lot {
+        Quantity quantity = 0.0;
+        Price cost_per_share = 0.0; // includes buy commission allocated per share
+    };
+    std::unordered_map<std::string, std::deque<Lot>> open_lots_;
+    std::unordered_map<std::string, Price> realized_pnl_by_symbol_;
+    Price realized_pnl_total_ = 0.0;
     
     // Risk management
     RiskConfig risk_config_;

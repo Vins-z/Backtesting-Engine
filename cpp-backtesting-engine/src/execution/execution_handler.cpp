@@ -4,20 +4,19 @@
 
 namespace backtesting {
 
-ExecutionHandler::ExecutionHandler(Price commission_rate, Price slippage_rate)
-    : commission_rate_(commission_rate), slippage_rate_(slippage_rate) {}
+ExecutionHandler::ExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed)
+    : commission_rate_(commission_rate),
+      slippage_rate_(slippage_rate),
+      seed_(seed),
+      rng_(static_cast<std::mt19937::result_type>(seed)) {}
 
 Price ExecutionHandler::calculate_commission(Quantity quantity, Price price) const {
     return quantity * price * commission_rate_;
 }
 
 Price ExecutionHandler::calculate_slippage(Price price, OrderSide side) const {
-    // Simple slippage model - random slippage up to slippage_rate
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_real_distribution<> dis(0.0, 1.0);
-    
-    Price slippage = price * slippage_rate_ * dis(gen);
+    // Deterministic (seeded) slippage model.
+    Price slippage = price * slippage_rate_ * unit_dist_(rng_);
     
     // Buy orders have positive slippage (worse price)
     // Sell orders have negative slippage (worse price)
@@ -25,10 +24,10 @@ Price ExecutionHandler::calculate_slippage(Price price, OrderSide side) const {
 }
 
 // SimpleExecutionHandler Implementation
-SimpleExecutionHandler::SimpleExecutionHandler(Price commission_rate, Price slippage_rate)
-    : ExecutionHandler(commission_rate, slippage_rate), 
+SimpleExecutionHandler::SimpleExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed)
+    : ExecutionHandler(commission_rate, slippage_rate, seed),
       commission_rate_(commission_rate), slippage_rate_(slippage_rate),
-      rng_(std::random_device{}()), slippage_dist_(-slippage_rate, slippage_rate),
+      rng_(static_cast<std::mt19937::result_type>(seed)), slippage_dist_(-slippage_rate, slippage_rate),
       total_orders_(0), total_commission_(0.0), total_slippage_(0.0) {}
 
 Fill SimpleExecutionHandler::execute_order(const Order& order, const OHLC& current_data) {
@@ -131,11 +130,11 @@ void SimpleExecutionHandler::reset_stats() {
 // RealisticExecutionHandler Implementation
 RealisticExecutionHandler::RealisticExecutionHandler(Price commission_rate, Price min_commission, 
                                                    Price max_commission, Price slippage_rate, 
-                                                   Price market_impact_factor)
-    : ExecutionHandler(commission_rate, slippage_rate),
+                                                   Price market_impact_factor, std::uint64_t seed)
+    : ExecutionHandler(commission_rate, slippage_rate, seed),
       commission_rate_(commission_rate), min_commission_(min_commission), 
       max_commission_(max_commission), slippage_rate_(slippage_rate),
-      market_impact_factor_(market_impact_factor), rng_(std::random_device{}()),
+      market_impact_factor_(market_impact_factor), rng_(static_cast<std::mt19937::result_type>(seed)),
       slippage_dist_(0.0, slippage_rate), total_orders_(0), 
       total_commission_(0.0), total_slippage_(0.0), total_market_impact_(0.0) {}
 

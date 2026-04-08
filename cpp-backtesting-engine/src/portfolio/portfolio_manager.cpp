@@ -402,7 +402,43 @@ void PortfolioManager::update_fill(const Fill& fill) {
         }
     }
     
-    // Update position with fill
+    // Update lot ledger + realized P&L before mutating position state.
+    if (fill.side == OrderSide::BUY) {
+        // Allocate commission per share into the lot cost basis.
+        Price cost_per_share = fill.price;
+        if (fill.quantity > 0) {
+            cost_per_share += (fill.commission / fill.quantity);
+        }
+        open_lots_[fill.symbol].push_back(Lot{fill.quantity, cost_per_share});
+    } else if (fill.side == OrderSide::SELL) {
+        Quantity remaining = fill.quantity;
+        Price proceeds_per_share = fill.price;
+        if (fill.quantity > 0) {
+            proceeds_per_share -= (fill.commission / fill.quantity);
+        }
+
+        auto& lots = open_lots_[fill.symbol];
+        while (remaining > 0 && !lots.empty()) {
+            Lot& lot = lots.front();
+            Quantity matched = std::min(remaining, lot.quantity);
+            Price pnl = (proceeds_per_share - lot.cost_per_share) * matched;
+            realized_pnl_total_ += pnl;
+            realized_pnl_by_symbol_[fill.symbol] += pnl;
+
+            lot.quantity -= matched;
+            remaining -= matched;
+            if (lot.quantity <= 0) {
+                lots.pop_front();
+            }
+        }
+
+        // If we sold more than we had in lots, something is inconsistent; keep state safe.
+        if (remaining > 0) {
+            logger_->error("Lot ledger underflow for {}: sold {}, unmatched {}", fill.symbol, fill.quantity, remaining);
+        }
+    }
+
+    // Update position with fill (cash + avg price + qty)
     update_position(fill);
     
     // Record in trade history
@@ -529,19 +565,7 @@ Price PortfolioManager::get_unrealized_pnl() const {
 }
 
 Price PortfolioManager::get_realized_pnl() const {
-    Price realized = 0;
-    std::unordered_map<std::string, Price> symbol_realized;
-    
-    for (const auto& fill : trade_history_) {
-        if (fill.side == OrderSide::SELL) {
-            // Calculate realized P&L on sell
-            auto& position = positions_.at(fill.symbol);
-            Price profit = (fill.price - position.avg_price) * fill.quantity;
-            realized += profit;
-        }
-    }
-    
-    return realized;
+    return realized_pnl_total_;
 }
 
 Price PortfolioManager::get_total_return() const {
@@ -552,8 +576,12 @@ void PortfolioManager::update_position(const Fill& fill) {
     EnhancedPosition& position = positions_[fill.symbol];
     
     if (fill.side == OrderSide::BUY) {
-        // Update average price
-        Price total_cost = position.quantity * position.avg_price + fill.quantity * fill.price;
+        // Update average price including allocated commission per share.
+        Price buy_cost_per_share = fill.price;
+        if (fill.quantity > 0) {
+            buy_cost_per_share += (fill.commission / fill.quantity);
+        }
+        Price total_cost = position.quantity * position.avg_price + fill.quantity * buy_cost_per_share;
         position.quantity += fill.quantity;
         position.avg_price = total_cost / position.quantity;
         
@@ -561,6 +589,9 @@ void PortfolioManager::update_position(const Fill& fill) {
         current_cash_ -= fill.quantity * fill.price + fill.commission;
     } else if (fill.side == OrderSide::SELL) {
         position.quantity -= fill.quantity;
+
+        // Update realized P&L (for reporting) from ledger totals.
+        position.realized_pnl = realized_pnl_by_symbol_[fill.symbol];
         
         // Update cash
         current_cash_ += fill.quantity * fill.price - fill.commission;

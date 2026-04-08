@@ -195,10 +195,22 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
         ${CORE_SOURCES}
     )
 
+    add_executable(test_determinism_execution_seed
+        tests/determinism_execution_seed_test.cpp
+        ${CORE_SOURCES}
+    )
+
+    add_executable(test_realized_pnl_fifo
+        tests/realized_pnl_fifo_test.cpp
+        ${CORE_SOURCES}
+    )
+
     # Tests are built from standalone translation units (they don't automatically
     # pick up include paths from the shared library target since they link none).
     target_include_directories(test_csv_date_filter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(test_risk_exposure_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_determinism_execution_seed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_realized_pnl_fifo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     target_link_libraries(test_csv_date_filter
         PRIVATE
@@ -220,8 +232,30 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
         Threads::Threads
     )
 
+    target_link_libraries(test_determinism_execution_seed
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
+    target_link_libraries(test_realized_pnl_fifo
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
     add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
     add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
+    add_test(NAME test_determinism_execution_seed COMMAND test_determinism_execution_seed)
+    add_test(NAME test_realized_pnl_fifo COMMAND test_realized_pnl_fifo)
 endif()
 
 # Examples

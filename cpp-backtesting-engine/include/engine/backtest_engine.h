@@ -11,6 +11,7 @@
 #include <queue>
 #include <memory>
 #include <deque>
+#include <cstdint>
 #include <spdlog/spdlog.h>
 #include <thread>
 #include <nlohmann/json.hpp>
@@ -34,6 +35,10 @@ struct BacktestConfig {
     std::string output_path;
     bool verbose_logging;
     int max_concurrent_positions;
+
+    // Determinism: when set, execution randomness is reproducible.
+    // Library default is 0 for stable results across runs.
+    std::uint64_t seed = 0;
     
     // Account and market configuration
     // account_type: "CASH" (default) or "MARGIN" (reserved for future use)

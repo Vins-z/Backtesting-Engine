@@ -8,6 +8,48 @@
 
 namespace backtesting {
 
+namespace {
+struct Lot {
+    Quantity quantity = 0.0;
+    Price cost_per_share = 0.0; // includes buy commission allocated per share
+};
+
+static std::vector<Price> compute_fifo_trade_pnls(const std::vector<Fill>& trades) {
+    // Compute realized P&L from fills using FIFO lots.
+    // This handles partial sells and multiple entries/exits per symbol.
+    std::unordered_map<std::string, std::deque<Lot>> lots_by_symbol;
+    std::vector<Price> pnls;
+
+    for (const auto& f : trades) {
+        if (f.quantity <= 0 || f.price <= 0.0) continue;
+
+        if (f.side == OrderSide::BUY) {
+            Price cost_per_share = f.price;
+            cost_per_share += (f.commission / f.quantity);
+            lots_by_symbol[f.symbol].push_back(Lot{f.quantity, cost_per_share});
+            continue;
+        }
+
+        if (f.side == OrderSide::SELL) {
+            Quantity remaining = f.quantity;
+            Price proceeds_per_share = f.price - (f.commission / f.quantity);
+
+            auto& lots = lots_by_symbol[f.symbol];
+            while (remaining > 0 && !lots.empty()) {
+                Lot& lot = lots.front();
+                Quantity matched = std::min(remaining, lot.quantity);
+                pnls.push_back((proceeds_per_share - lot.cost_per_share) * matched);
+                lot.quantity -= matched;
+                remaining -= matched;
+                if (lot.quantity <= 0) lots.pop_front();
+            }
+        }
+    }
+
+    return pnls;
+}
+} // namespace
+
 void PerformanceAnalyzer::record_trade(const Fill& trade) {
     recorded_trades_.push_back(trade);
 }
@@ -148,71 +190,39 @@ Price BasicPerformanceAnalyzer::calculate_volatility(const std::vector<Price>& r
 }
 
 Price PerformanceAnalyzer::calculate_win_rate(const std::vector<Fill>& trades) const {
-    if (trades.empty()) return 0.0;
-    
-    int winning_trades = count_winning_trades(trades);
-    int total_trades = count_total_trades(trades);
-    
-    return total_trades > 0 ? static_cast<double>(winning_trades) / total_trades : 0.0;
+    auto pnls = compute_fifo_trade_pnls(trades);
+    if (pnls.empty()) return 0.0;
+
+    int winning = 0;
+    for (auto p : pnls) if (p > 0) winning++;
+    return static_cast<double>(winning) / pnls.size();
 }
 
-Price PerformanceAnalyzer::calculate_profit_factor([[maybe_unused]] const std::vector<Fill>& trades) const {
-    // Calculate P&L manually since we can't call derived class method from base class
-    std::vector<Price> trade_pnls;
-    
+Price PerformanceAnalyzer::calculate_profit_factor(const std::vector<Fill>& trades) const {
+    auto pnls = compute_fifo_trade_pnls(trades);
+    if (pnls.empty()) return 0.0;
+
     Price gross_profit = 0.0;
     Price gross_loss = 0.0;
-    
-    for (Price pnl : trade_pnls) {
-        if (pnl > 0) {
-            gross_profit += pnl;
-        } else {
-            gross_loss += std::abs(pnl);
-        }
+    for (Price pnl : pnls) {
+        if (pnl > 0) gross_profit += pnl;
+        else gross_loss += std::abs(pnl);
     }
-    
-    return gross_loss > 0 ? gross_profit / gross_loss : 0.0;
+    return gross_loss > 0 ? gross_profit / gross_loss : (gross_profit > 0 ? std::numeric_limits<Price>::infinity() : 0.0);
 }
 
 int PerformanceAnalyzer::count_total_trades(const std::vector<Fill>& trades) const {
-    // Count unique round-trip trades (pairs of buy/sell)
-    std::unordered_map<std::string, int> symbol_trades;
-    
-    for (const auto& trade : trades) {
-        if (trade.side == OrderSide::SELL) {
-            symbol_trades[trade.symbol]++;
-        }
-    }
-    
-    int total = 0;
-    for (const auto& [symbol, count] : symbol_trades) {
-        total += count;
-    }
-    
-    return total;
+    return static_cast<int>(compute_fifo_trade_pnls(trades).size());
 }
 
 int PerformanceAnalyzer::count_winning_trades(const std::vector<Fill>& trades) const {
-    // Simple approach - just count profitable trades directly
-    int winning = 0;
-    for (const auto& trade : trades) {
-        if (trade.side == OrderSide::SELL && trade.price > 0) {
-            winning++;
-        }
-    }
-    
-    return winning;
+    auto pnls = compute_fifo_trade_pnls(trades);
+    return static_cast<int>(std::count_if(pnls.begin(), pnls.end(), [](Price p) { return p > 0; }));
 }
 
 int PerformanceAnalyzer::count_losing_trades(const std::vector<Fill>& trades) const {
-    // Simple approach - count total sells and subtract winning trades
-    int total_sells = 0;
-    for (const auto& trade : trades) {
-        if (trade.side == OrderSide::SELL) {
-            total_sells++;
-        }
-    }
-    return total_sells - count_winning_trades(trades);
+    auto pnls = compute_fifo_trade_pnls(trades);
+    return static_cast<int>(std::count_if(pnls.begin(), pnls.end(), [](Price p) { return p < 0; }));
 }
 
 void PerformanceAnalyzer::reset() {
@@ -235,39 +245,7 @@ std::vector<Price> BasicPerformanceAnalyzer::calculate_returns(const std::vector
 }
 
 std::vector<Price> BasicPerformanceAnalyzer::group_trades_by_pnl(const std::vector<Fill>& trades) const {
-    std::vector<Price> trade_pnls;
-    std::unordered_map<std::string, std::vector<Fill>> symbol_trades;
-    
-    // Group trades by symbol
-    for (const auto& trade : trades) {
-        symbol_trades[trade.symbol].push_back(trade);
-    }
-    
-    // Calculate P&L for each symbol
-    for (const auto& [symbol, symbol_trade_list] : symbol_trades) {
-        std::vector<Fill> buys, sells;
-        
-        for (const auto& trade : symbol_trade_list) {
-            if (trade.side == OrderSide::BUY) {
-                buys.push_back(trade);
-            } else {
-                sells.push_back(trade);
-            }
-        }
-        
-        // Match sells with buys to calculate P&L
-        for (const auto& sell : sells) {
-            if (!buys.empty()) {
-                auto buy = buys.front();
-                buys.erase(buys.begin());
-                
-                Price pnl = (sell.price - buy.price) * std::min(buy.quantity, sell.quantity);
-                trade_pnls.push_back(pnl);
-            }
-        }
-    }
-    
-    return trade_pnls;
+    return compute_fifo_trade_pnls(trades);
 }
 
 // Add missing method implementations for BasicPerformanceAnalyzer

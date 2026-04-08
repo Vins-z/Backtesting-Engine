@@ -4,6 +4,7 @@
 #include <queue>
 #include <memory>
 #include <random>
+#include <cstdint>
 
 namespace backtesting {
 
@@ -11,9 +12,12 @@ class ExecutionHandler {
 protected:
     Price commission_rate_;
     Price slippage_rate_;
+    std::uint64_t seed_ = 0;
+    mutable std::mt19937 rng_;
+    mutable std::uniform_real_distribution<double> unit_dist_{0.0, 1.0};
     
 public:
-    ExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001);
+    ExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001, std::uint64_t seed = 0);
     virtual ~ExecutionHandler() = default;
     
     // Execute an order and return a fill
@@ -60,7 +64,7 @@ private:
     Price calculate_slippage_with_volume(OrderSide side, Price price, Volume volume) const;
     
 public:
-    SimpleExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001);
+    SimpleExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001, std::uint64_t seed = 0);
     
     Fill execute_order(const Order& order, const OHLC& current_data) override;
     
@@ -110,7 +114,8 @@ public:
                             Price min_commission = 1.0,
                             Price max_commission = 0.005,
                             Price slippage_rate = 0.001,
-                            Price market_impact_factor = 0.001);
+                            Price market_impact_factor = 0.001,
+                            std::uint64_t seed = 0);
     
     Fill execute_order(const Order& order, const OHLC& current_data) override;
     

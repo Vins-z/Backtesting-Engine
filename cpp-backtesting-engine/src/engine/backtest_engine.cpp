@@ -173,7 +173,8 @@ bool BacktestEngine::initialize_components() {
             1.0,                       // min_commission (minimum $1 per trade)
             0.005,                     // max_commission (0.5% max)
             config_.slippage_rate,     // slippage_rate
-            0.001                      // market_impact_factor (0.1% impact factor)
+            0.001,                     // market_impact_factor (0.1% impact factor)
+            config_.seed               // seed (deterministic by default)
         );
         
         // Initialize risk manager with breakeven/trailing stop support from strategy definition
@@ -219,18 +220,19 @@ bool BacktestEngine::initialize_components() {
 
 BacktestResult BacktestEngine::run_backtest() {
     logger_->info("Starting backtest: {}", config_.name);
+    const auto run_start_wall = std::chrono::system_clock::now();
     start_time_ = std::chrono::high_resolution_clock::now();
     
     BacktestResult result;
     result.config = config_;
-    result.start_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(start_time_.time_since_epoch()).count());
+    result.start_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(run_start_wall.time_since_epoch()).count());
     
     try {
         if (progress_callback_) {
             nlohmann::json evt;
             evt["type"] = "backtest.start";
             evt["name"] = config_.name;
-            evt["start_time_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(start_time_.time_since_epoch()).count();
+            evt["start_time_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(run_start_wall.time_since_epoch()).count();
             evt["config"] = config_.to_json();
             // Include strategy params explicitly for richer logs
             evt["strategy_name"] = config_.strategy_name;
@@ -317,9 +319,10 @@ BacktestResult BacktestEngine::run_backtest() {
         }
         
         // Finalize results
+        const auto run_end_wall = std::chrono::system_clock::now();
         end_time_ = std::chrono::high_resolution_clock::now();
         result.duration_seconds = std::chrono::duration<double>(end_time_ - start_time_).count();
-        result.end_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end_time_.time_since_epoch()).count());
+        result.end_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(run_end_wall.time_since_epoch()).count());
         
         // Calculate performance metrics
         result.metrics = performance_analyzer_->calculate_metrics(
@@ -817,6 +820,7 @@ BacktestConfig BacktestConfig::load_from_yaml(const std::string& yaml_file) {
     cfg.api_key = config["data"]["api_key"].as<std::string>("");
     cfg.output_path = config["output"]["path"].as<std::string>();
     cfg.verbose_logging = config["output"]["verbose_logging"].as<bool>(false);
+    cfg.seed = config["backtest"]["seed"].as<std::uint64_t>(0);
     cfg.account_type = "CASH";
     cfg.market_type = "OTHER";
     cfg.strategy_name = config["strategy"]["name"].as<std::string>();
@@ -842,6 +846,7 @@ nlohmann::json BacktestConfig::to_json() const {
     j["symbols"] = symbols;
     j["start_date"] = start_date;
     j["end_date"] = end_date;
+    j["seed"] = seed;
     j["initial_capital"] = initial_capital;
     j["commission_rate"] = commission_rate;
     j["slippage_rate"] = slippage_rate;
@@ -881,8 +886,14 @@ nlohmann::json BacktestResult::to_json() const {
     // ISO-style datetime formatter for trade timestamps (UTC)
     auto fmt_ts_datetime = [](Timestamp ts) {
         auto t = std::chrono::system_clock::to_time_t(ts);
+        std::tm tm_utc{};
+#if defined(_WIN32)
+        gmtime_s(&tm_utc, &t);
+#else
+        gmtime_r(&t, &tm_utc);
+#endif
         std::ostringstream oss;
-        oss << std::put_time(std::gmtime(&t), "%Y-%m-%dT%H:%M:%S");
+        oss << std::put_time(&tm_utc, "%Y-%m-%dT%H:%M:%S");
         return oss.str();
     };
 
@@ -953,8 +964,14 @@ nlohmann::json BacktestResult::to_json() const {
     for (const auto& point : equity_curve) {
         nlohmann::json point_json;
         auto time_t = std::chrono::system_clock::to_time_t(point.first);
+        std::tm tm_utc{};
+#if defined(_WIN32)
+        gmtime_s(&tm_utc, &time_t);
+#else
+        gmtime_r(&time_t, &tm_utc);
+#endif
         std::ostringstream oss;
-        oss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+        oss << std::put_time(&tm_utc, "%Y-%m-%d");
         point_json["timestamp"] = oss.str();
         point_json["value"] = point.second;
         j["equity_curve"].push_back(point_json);
