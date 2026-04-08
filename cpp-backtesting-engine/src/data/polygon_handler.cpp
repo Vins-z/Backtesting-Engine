@@ -441,6 +441,17 @@ bool PolygonHandler::load_from_cache(const std::string& symbol, const std::strin
             std::ifstream file(cache_file);
             nlohmann::json cache_json;
             file >> cache_json;
+
+            // Validate requested date range against cache metadata to avoid returning mismatched data.
+            if (cache_json.contains("start_date") && cache_json["start_date"].is_string() &&
+                cache_json.contains("end_date") && cache_json["end_date"].is_string()) {
+                const std::string cached_start = cache_json["start_date"].get<std::string>();
+                const std::string cached_end = cache_json["end_date"].get<std::string>();
+                if ((!start_date.empty() && cached_start != start_date) ||
+                    (!end_date.empty() && cached_end != end_date)) {
+                    return false;
+                }
+            }
             
             std::vector<OHLC> cached_data;
             for (const auto& item : cache_json["data"]) {

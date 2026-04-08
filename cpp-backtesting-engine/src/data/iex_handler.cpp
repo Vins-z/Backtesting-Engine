@@ -231,7 +231,22 @@ std::string IEXHandler::build_iex_url(
     // Format: /stock/{symbol}/chart/{range}
     // For date range, we use the 'range' parameter or query params
     
-    url << base_url_ << "/stock/" << symbol << "/chart/1y";
+    // Choose a chart range based on requested span, so start/end dates actually influence behavior.
+    std::string range = "1y";
+    if (!start_date.empty() && !end_date.empty()) {
+        Timestamp start_ts = parse_iex_timestamp(start_date);
+        Timestamp end_ts = parse_iex_timestamp(end_date);
+        if (end_ts > start_ts) {
+            auto days = std::chrono::duration_cast<std::chrono::hours>(end_ts - start_ts).count() / 24;
+            if (days <= 32) range = "1m";
+            else if (days <= 95) range = "3m";
+            else if (days <= 190) range = "6m";
+            else if (days <= 370) range = "1y";
+            else range = "5y";
+        }
+    }
+
+    url << base_url_ << "/stock/" << symbol << "/chart/" << range;
     
     if (!api_key_.empty()) {
         url << "?token=" << api_key_;
@@ -317,6 +332,18 @@ bool IEXHandler::load_from_cache(const std::string& symbol, const std::string& s
             std::ifstream file(cache_file);
             nlohmann::json cache_json;
             file >> cache_json;
+
+            // Validate requested date range against the cache metadata.
+            // If the cache was generated for a different range, ignore it to avoid returning incorrect data.
+            if (cache_json.contains("start_date") && cache_json["start_date"].is_string() &&
+                cache_json.contains("end_date") && cache_json["end_date"].is_string()) {
+                const std::string cached_start = cache_json["start_date"].get<std::string>();
+                const std::string cached_end = cache_json["end_date"].get<std::string>();
+                if ((!start_date.empty() && cached_start != start_date) ||
+                    (!end_date.empty() && cached_end != end_date)) {
+                    return false;
+                }
+            }
             
             std::vector<OHLC> cached_data;
             for (const auto& item : cache_json["data"]) {
