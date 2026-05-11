@@ -205,12 +205,29 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
         ${CORE_SOURCES}
     )
 
+    add_executable(test_utc_timestamp
+        tests/utc_timestamp_test.cpp
+    )
+
+    add_executable(test_execution_model
+        tests/execution_model_test.cpp
+        ${CORE_SOURCES}
+    )
+
+    add_executable(test_config_validate_const
+        tests/config_validate_const_test.cpp
+        ${CORE_SOURCES}
+    )
+
     # Tests are built from standalone translation units (they don't automatically
     # pick up include paths from the shared library target since they link none).
     target_include_directories(test_csv_date_filter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(test_risk_exposure_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(test_determinism_execution_seed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(test_realized_pnl_fifo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_utc_timestamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_execution_model PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(test_config_validate_const PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     target_link_libraries(test_csv_date_filter
         PRIVATE
@@ -252,10 +269,36 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
         Threads::Threads
     )
 
+    # test_utc_timestamp uses only headers from common/time_utils.h and the
+    # standard library; no third-party deps required.
+
+    target_link_libraries(test_execution_model
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
+    target_link_libraries(test_config_validate_const
+        PRIVATE
+        Eigen3::Eigen
+        spdlog::spdlog
+        CURL::libcurl
+        yaml-cpp::yaml-cpp
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
     add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
     add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
     add_test(NAME test_determinism_execution_seed COMMAND test_determinism_execution_seed)
     add_test(NAME test_realized_pnl_fifo COMMAND test_realized_pnl_fifo)
+    add_test(NAME test_utc_timestamp COMMAND test_utc_timestamp)
+    add_test(NAME test_execution_model COMMAND test_execution_model)
+    add_test(NAME test_config_validate_const COMMAND test_config_validate_const)
 endif()
 
 # Examples

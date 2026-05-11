@@ -60,12 +60,14 @@ BacktestEngine::~BacktestEngine() {
 
 bool BacktestEngine::configure(const BacktestConfig& config) {
     config_ = config;
+    config_.normalize();
     return initialize_components();
 }
 
 bool BacktestEngine::configure_from_yaml(const std::string& yaml_file) {
     try {
         config_ = BacktestConfig::load_from_yaml(yaml_file);
+        config_.normalize();
         return initialize_components();
     } catch (const std::exception& e) {
         logger_->error("Failed to load config from YAML: {}", e.what());
@@ -167,14 +169,16 @@ bool BacktestEngine::initialize_components() {
         portfolio_manager_ = std::make_unique<PortfolioManager>(config_.initial_capital, risk_config);
         
         // Initialize execution handler - use RealisticExecutionHandler for industry-standard execution
-        // This provides proper market impact, realistic slippage, and better price execution
+        // This provides proper market impact, realistic slippage, and better price execution.
+        // The execution model is forwarded so the handler picks the right base price.
         execution_handler_ = std::make_unique<RealisticExecutionHandler>(
             config_.commission_rate,  // commission_rate
             1.0,                       // min_commission (minimum $1 per trade)
             0.005,                     // max_commission (0.5% max)
             config_.slippage_rate,     // slippage_rate
             0.001,                     // market_impact_factor (0.1% impact factor)
-            config_.seed               // seed (deterministic by default)
+            config_.seed,              // seed (deterministic by default)
+            config_.execution_model    // bar-pricing convention
         );
         
         // Initialize risk manager with breakeven/trailing stop support from strategy definition
@@ -425,6 +429,14 @@ void BacktestEngine::process_market_event(const MarketEvent& event) {
     // Update portfolio with current market data
     portfolio_manager_->update_market_data(event.symbol, event.data);
 
+    // Drain any NEXT_BAR_OPEN orders that were queued for this symbol on the
+    // previous bar. They execute against the just-ingested bar (using its open
+    // price via the execution model). This removes the intra-bar look-ahead
+    // present when fills used the same bar's high/low/close.
+    if (config_.execution_model == ExecutionModel::NEXT_BAR_OPEN) {
+        drain_pending_orders_for_symbol(event.symbol);
+    }
+
     // Build OHLC history for context (volatility, regime)
     ohlc_history_[event.symbol].push_back(event.data);
     constexpr size_t max_history = 500;
@@ -540,6 +552,31 @@ void BacktestEngine::process_order_event(const OrderEvent& event) {
         }
     }
 
+    // Under NEXT_BAR_OPEN, defer execution until the next MarketEvent for this symbol.
+    // The pending order is drained at the top of process_market_event on the next bar.
+    if (config_.execution_model == ExecutionModel::NEXT_BAR_OPEN) {
+        pending_next_bar_orders_[order.symbol].push_back(order);
+        return;
+    }
+
+    execute_order_immediate(std::move(order));
+}
+
+void BacktestEngine::drain_pending_orders_for_symbol(const std::string& symbol) {
+    auto it = pending_next_bar_orders_.find(symbol);
+    if (it == pending_next_bar_orders_.end() || it->second.empty()) {
+        return;
+    }
+    // Move the queue out so re-entry through execute_order_immediate cannot
+    // observe an inconsistent state.
+    std::vector<Order> orders = std::move(it->second);
+    pending_next_bar_orders_.erase(it);
+    for (auto& order : orders) {
+        execute_order_immediate(std::move(order));
+    }
+}
+
+void BacktestEngine::execute_order_immediate(Order order) {
     // Execute order - need to get current market data for execution
     auto current_data = portfolio_manager_->get_current_market_data(order.symbol);
     
@@ -614,14 +651,14 @@ void BacktestEngine::process_order_event(const OrderEvent& event) {
     } else {
         // Log failed fills for debugging - this should be rare but indicates an issue
         logger_->warn("Order {} failed to fill: {} {} shares requested @ ${:.2f}", 
-                     event.order.id, event.order.quantity,
-                     event.order.side == OrderSide::BUY ? "BUY" : "SELL",
-                     event.order.price);
+                     order.id, order.quantity,
+                     order.side == OrderSide::BUY ? "BUY" : "SELL",
+                     order.price);
         if (progress_callback_) {
             nlohmann::json evt;
             evt["type"] = "event.order_rejected";
-            evt["order_id"] = event.order.id;
-            evt["symbol"] = event.order.symbol;
+            evt["order_id"] = order.id;
+            evt["symbol"] = order.symbol;
             evt["reason"] = "Execution handler returned zero quantity";
             progress_callback_(evt);
         }
@@ -821,6 +858,17 @@ BacktestConfig BacktestConfig::load_from_yaml(const std::string& yaml_file) {
     cfg.output_path = config["output"]["path"].as<std::string>();
     cfg.verbose_logging = config["output"]["verbose_logging"].as<bool>(false);
     cfg.seed = config["backtest"]["seed"].as<std::uint64_t>(0);
+
+    // Optional execution model. Accepts "next_bar_open" (recommended),
+    // "current_bar_open", "current_bar_close", or "worst_of_bar" (legacy default).
+    if (config["execution"] && config["execution"]["model"]) {
+        const auto raw = config["execution"]["model"].as<std::string>("");
+        if (raw == "next_bar_open")            cfg.execution_model = ExecutionModel::NEXT_BAR_OPEN;
+        else if (raw == "current_bar_open")    cfg.execution_model = ExecutionModel::CURRENT_BAR_OPEN;
+        else if (raw == "current_bar_close")   cfg.execution_model = ExecutionModel::CURRENT_BAR_CLOSE;
+        else if (raw == "worst_of_bar")        cfg.execution_model = ExecutionModel::WORST_OF_BAR;
+    }
+
     cfg.account_type = "CASH";
     cfg.market_type = "OTHER";
     cfg.strategy_name = config["strategy"]["name"].as<std::string>();
@@ -847,6 +895,16 @@ nlohmann::json BacktestConfig::to_json() const {
     j["start_date"] = start_date;
     j["end_date"] = end_date;
     j["seed"] = seed;
+    {
+        const char* model_name = "worst_of_bar";
+        switch (execution_model) {
+            case ExecutionModel::NEXT_BAR_OPEN:    model_name = "next_bar_open"; break;
+            case ExecutionModel::CURRENT_BAR_OPEN: model_name = "current_bar_open"; break;
+            case ExecutionModel::CURRENT_BAR_CLOSE:model_name = "current_bar_close"; break;
+            case ExecutionModel::WORST_OF_BAR:     model_name = "worst_of_bar"; break;
+        }
+        j["execution_model"] = model_name;
+    }
     j["initial_capital"] = initial_capital;
     j["commission_rate"] = commission_rate;
     j["slippage_rate"] = slippage_rate;
@@ -1016,16 +1074,30 @@ void BacktestEngine::enable_logging(const std::string& log_file, spdlog::level::
 
 std::unique_ptr<BacktestEngine> BacktestEngine::create_from_config(const BacktestConfig& config) {
     auto engine = std::make_unique<BacktestEngine>();
-    
-    if (!config.validate()) {
+
+    BacktestConfig normalized = config;
+    normalized.normalize();
+
+    if (!normalized.validate()) {
         throw std::invalid_argument("Invalid backtest configuration");
     }
     
-    if (!engine->configure(config)) {
+    if (!engine->configure(normalized)) {
         throw std::runtime_error("Failed to configure backtest engine");
     }
     
     return engine;
+}
+
+void BacktestConfig::normalize() {
+    // Apply defaults so downstream components can rely on non-empty strings.
+    // CASH means fully-funded (no margin); MARGIN is reserved for future use.
+    if (account_type.empty()) {
+        account_type = "CASH";
+    }
+    if (market_type.empty()) {
+        market_type = "OTHER";
+    }
 }
 
 bool BacktestConfig::validate() const {
@@ -1051,16 +1123,6 @@ bool BacktestConfig::validate() const {
     
     if (strategy_name.empty()) {
         return false;
-    }
-
-    // Default account_type and market_type if not provided so older callers remain valid
-    // and downstream components can rely on non-empty strings.
-    // CASH means fully-funded (no margin); MARGIN is reserved for future use.
-    if (account_type.empty()) {
-        const_cast<BacktestConfig*>(this)->account_type = "CASH";
-    }
-    if (market_type.empty()) {
-        const_cast<BacktestConfig*>(this)->market_type = "OTHER";
     }
 
     return true;

@@ -1,4 +1,5 @@
 #include "data/data_handler.h"
+#include "common/time_utils.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -194,12 +195,9 @@ OHLC CSVDataHandler::parse_csv_line(const std::vector<std::string>& cells, int d
 }
 
 Timestamp CSVDataHandler::parse_timestamp(const std::string& date_str) const {
-    // Simple date parsing for YYYY-MM-DD format
-    std::tm tm = {};
-    std::istringstream ss(date_str);
-    ss >> std::get_time(&tm, "%Y-%m-%d");
-    
-    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    // Parse as UTC so the same CSV is interpreted identically across machines,
+    // independent of the host TZ. Supports YYYY-MM-DD and ISO datetime variants.
+    return parse_utc_timestamp_or(date_str, std::chrono::system_clock::time_point{});
 }
 
 std::string CSVDataHandler::find_symbol_csv_path(const std::string& symbol) const {

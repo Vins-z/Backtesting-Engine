@@ -39,6 +39,12 @@ struct BacktestConfig {
     // Determinism: when set, execution randomness is reproducible.
     // Library default is 0 for stable results across runs.
     std::uint64_t seed = 0;
+
+    // How market orders are priced against the OHLC bar.
+    // Defaults to WORST_OF_BAR to preserve historical behavior of the engine,
+    // but library consumers are strongly encouraged to set NEXT_BAR_OPEN to
+    // eliminate intra-bar look-ahead.
+    ExecutionModel execution_model = ExecutionModel::WORST_OF_BAR;
     
     // Account and market configuration
     // account_type: "CASH" (default) or "MARGIN" (reserved for future use)
@@ -66,7 +72,11 @@ struct BacktestConfig {
     // Convert to JSON
     nlohmann::json to_json() const;
     
-    // Validate configuration
+    // Apply defaults in-place for any fields the caller left empty (e.g. account/market type).
+    // Safe to call multiple times; idempotent.
+    void normalize();
+
+    // Validate configuration (does not mutate; call normalize() first if you want defaults applied).
     bool validate() const;
 };
 
@@ -154,6 +164,17 @@ private:
     void process_signal_event(const SignalEvent& event);
     void process_order_event(const OrderEvent& event);
     void process_fill_event(const FillEvent& event);
+
+    // Execute an order against the portfolio's latest known market data and
+    // push the resulting fill onto the event queue. Used both for immediate
+    // execution and to drain NEXT_BAR_OPEN pending orders after the next
+    // bar has been ingested.
+    void execute_order_immediate(Order order);
+
+    // Pending orders waiting for the next bar of each symbol (only populated
+    // when config_.execution_model == ExecutionModel::NEXT_BAR_OPEN).
+    std::unordered_map<std::string, std::vector<Order>> pending_next_bar_orders_;
+    void drain_pending_orders_for_symbol(const std::string& symbol);
     
     // Helper methods
     void generate_signals();

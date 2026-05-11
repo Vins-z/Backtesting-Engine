@@ -50,6 +50,21 @@ enum class OrderSide {
     SELL
 };
 
+// Execution model controls how a market order's fill price is derived from a bar.
+// NEXT_BAR_OPEN is the recommended default for daily-bar backtests because it
+// eliminates intra-bar look-ahead: the strategy decides on bar t's close, and
+// the fill happens at bar t+1's open price.
+// CURRENT_BAR_OPEN and CURRENT_BAR_CLOSE simulate near-instant execution on the
+// decision bar. WORST_OF_BAR fills BUY at the bar's high and SELL at the bar's
+// low (pessimistic but contains intra-bar look-ahead; preserved for backward
+// compatibility with prior releases).
+enum class ExecutionModel {
+    NEXT_BAR_OPEN = 0,
+    CURRENT_BAR_OPEN = 1,
+    CURRENT_BAR_CLOSE = 2,
+    WORST_OF_BAR = 3
+};
+
 // Order structure
 struct Order {
     int id;

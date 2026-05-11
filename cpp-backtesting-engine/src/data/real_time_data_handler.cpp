@@ -1,4 +1,5 @@
 #include "data/data_handler.h"
+#include "common/time_utils.h"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -120,12 +121,7 @@ private:
                 
                 for (auto& [date, data] : time_series.items()) {
                     OHLC ohlc;
-                    
-                    // Parse date to timestamp (simplified)
-                    std::tm tm = {};
-                    std::istringstream ss(date);
-                    ss >> std::get_time(&tm, "%Y-%m-%d");
-                    ohlc.timestamp = std::mktime(&tm);
+                    ohlc.timestamp = parse_utc_timestamp_or(date, std::chrono::system_clock::time_point{});
                     
                     ohlc.open = std::stod(data["1. open"].get<std::string>());
                     ohlc.high = std::stod(data["2. high"].get<std::string>());

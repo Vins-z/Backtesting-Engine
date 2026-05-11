@@ -1,4 +1,5 @@
 #include "data/yfinance_handler.h"
+#include "common/time_utils.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -477,48 +478,12 @@ Timestamp YFinanceHandler::parse_yfinance_timestamp(const std::string& timestamp
         // If not a number, try parsing as date string
     }
     
-    std::tm tm = {};
-    std::memset(&tm, 0, sizeof(tm)); // Initialize to zero
-    std::istringstream ss(timestamp_str);
-    
-    // Try parsing date-time format first (YYYY-MM-DD HH:MM:SS)
-    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-    
-    if (ss.fail()) {
-        // Try parsing date-only format (YYYY-MM-DD)
-        ss.clear();
-        ss.str(timestamp_str);
-        ss.seekg(0);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
+    // Parse as UTC so date strings produce identical time_points across hosts.
+    if (auto ts = parse_utc_timestamp(timestamp_str)) {
+        return *ts;
     }
-    
-    if (ss.fail()) {
-        // Try alternative format (YYYY/MM/DD)
-        ss.clear();
-        ss.str(timestamp_str);
-        ss.seekg(0);
-        ss >> std::get_time(&tm, "%Y/%m/%d");
-    }
-    
-    if (ss.fail()) {
-        // If all parsing fails, log error and use current time
-        logger_->warn("Failed to parse timestamp '{}', using current time", timestamp_str);
-        return std::chrono::system_clock::now();
-    }
-    
-    // Set time to midnight if not specified
-    if (tm.tm_hour == 0 && tm.tm_min == 0 && tm.tm_sec == 0) {
-        // Already at midnight, good
-    }
-    
-    // Convert to time_t (handles timezone)
-    time_t time_val = std::mktime(&tm);
-    if (time_val == -1) {
-        logger_->warn("mktime failed for timestamp '{}', using current time", timestamp_str);
-        return std::chrono::system_clock::now();
-    }
-    
-    return std::chrono::system_clock::from_time_t(time_val);
+    logger_->warn("Failed to parse timestamp '{}', using current time", timestamp_str);
+    return std::chrono::system_clock::now();
 }
 
 YFinanceHandler::CurlResponse YFinanceHandler::make_http_request_with_retry(const std::string& url) {

@@ -1,4 +1,5 @@
 #include "data/iex_handler.h"
+#include "common/time_utils.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -292,20 +293,9 @@ std::vector<OHLC> IEXHandler::parse_iex_response(const std::string& response, co
 
 Timestamp IEXHandler::parse_iex_timestamp(const std::string& timestamp_str) const {
     // IEX format: "2023-01-15" or "2023-01-15T00:00:00Z"
-    std::tm tm = {};
-    std::istringstream ss(timestamp_str);
-    
-    if (timestamp_str.find('T') != std::string::npos) {
-        ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
-    } else {
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-    }
-    
-    if (ss.fail()) {
-        return std::chrono::system_clock::now();
-    }
-    
-    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    // Parse as UTC so identical inputs always map to the same time_point,
+    // regardless of the host TZ.
+    return parse_utc_timestamp_or(timestamp_str, std::chrono::system_clock::now());
 }
 
 bool IEXHandler::load_from_cache(const std::string& symbol, const std::string& start_date, const std::string& end_date) {

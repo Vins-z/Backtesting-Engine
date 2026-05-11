@@ -1,4 +1,5 @@
 #include "data/polygon_handler.h"
+#include "common/time_utils.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -542,19 +543,12 @@ std::string PolygonHandler::get_cache_filename(const std::string& symbol) const 
 }
 
 Timestamp PolygonHandler::parse_polygon_timestamp(const std::string& timestamp_str) const {
-    // Polygon format: "2023-01-15" or Unix timestamp
+    // Polygon returns either a Unix epoch in milliseconds or a date string.
     try {
         int64_t timestamp_ms = std::stoll(timestamp_str);
         return std::chrono::system_clock::time_point(std::chrono::milliseconds(timestamp_ms));
     } catch (...) {
-        // Try date format
-        std::tm tm = {};
-        std::istringstream ss(timestamp_str);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (ss.fail()) {
-            return std::chrono::system_clock::now();
-        }
-        return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        return parse_utc_timestamp_or(timestamp_str, std::chrono::system_clock::now());
     }
 }
 

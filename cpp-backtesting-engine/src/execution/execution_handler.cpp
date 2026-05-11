@@ -4,10 +4,11 @@
 
 namespace backtesting {
 
-ExecutionHandler::ExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed)
+ExecutionHandler::ExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed, ExecutionModel model)
     : commission_rate_(commission_rate),
       slippage_rate_(slippage_rate),
       seed_(seed),
+      execution_model_(model),
       rng_(static_cast<std::mt19937::result_type>(seed)) {}
 
 Price ExecutionHandler::calculate_commission(Quantity quantity, Price price) const {
@@ -23,9 +24,24 @@ Price ExecutionHandler::calculate_slippage(Price price, OrderSide side) const {
     return (side == OrderSide::BUY) ? slippage : -slippage;
 }
 
+Price ExecutionHandler::base_price_for_bar(OrderSide side, const OHLC& bar) const {
+    // From the handler's perspective, NEXT_BAR_OPEN looks identical to CURRENT_BAR_OPEN
+    // because the engine has already advanced to the next bar before calling us.
+    switch (execution_model_) {
+        case ExecutionModel::NEXT_BAR_OPEN:
+        case ExecutionModel::CURRENT_BAR_OPEN:
+            return bar.open;
+        case ExecutionModel::CURRENT_BAR_CLOSE:
+            return bar.close;
+        case ExecutionModel::WORST_OF_BAR:
+        default:
+            return (side == OrderSide::BUY) ? bar.high : bar.low;
+    }
+}
+
 // SimpleExecutionHandler Implementation
-SimpleExecutionHandler::SimpleExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed)
-    : ExecutionHandler(commission_rate, slippage_rate, seed),
+SimpleExecutionHandler::SimpleExecutionHandler(Price commission_rate, Price slippage_rate, std::uint64_t seed, ExecutionModel model)
+    : ExecutionHandler(commission_rate, slippage_rate, seed, model),
       commission_rate_(commission_rate), slippage_rate_(slippage_rate),
       rng_(static_cast<std::mt19937::result_type>(seed)), slippage_dist_(-slippage_rate, slippage_rate),
       total_orders_(0), total_commission_(0.0), total_slippage_(0.0) {}
@@ -36,10 +52,11 @@ Fill SimpleExecutionHandler::execute_order(const Order& order, const OHLC& curre
     }
     
     // Map order type + side to a deterministic execution price for this backtest model.
-    // Market orders execute at the worst OHLC price for the side.
+    // For market orders the base price is chosen by ExecutionModel; for non-MARKET
+    // orders we keep the legacy limit-order logic below.
     Price market_price;
     if (order.type == OrderType::MARKET) {
-        market_price = (order.side == OrderSide::BUY) ? current_data.high : current_data.low;
+        market_price = base_price_for_bar(order.side, current_data);
     } else {
         // For limit orders, use the order price if within range, otherwise use market price
         market_price = current_data.close;
@@ -130,8 +147,9 @@ void SimpleExecutionHandler::reset_stats() {
 // RealisticExecutionHandler Implementation
 RealisticExecutionHandler::RealisticExecutionHandler(Price commission_rate, Price min_commission, 
                                                    Price max_commission, Price slippage_rate, 
-                                                   Price market_impact_factor, std::uint64_t seed)
-    : ExecutionHandler(commission_rate, slippage_rate, seed),
+                                                   Price market_impact_factor, std::uint64_t seed,
+                                                   ExecutionModel model)
+    : ExecutionHandler(commission_rate, slippage_rate, seed, model),
       commission_rate_(commission_rate), min_commission_(min_commission), 
       max_commission_(max_commission), slippage_rate_(slippage_rate),
       market_impact_factor_(market_impact_factor), rng_(static_cast<std::mt19937::result_type>(seed)),
@@ -221,11 +239,14 @@ Price RealisticExecutionHandler::calculate_realistic_slippage(OrderSide side, Pr
 }
 
 Price RealisticExecutionHandler::get_execution_price(const Order& order, const OHLC& current_data) const {
-    // Use different prices based on order type
+    // For MARKET orders, the base price is chosen by the configured execution model
+    // (next bar open / current bar open / close / worst-of-bar). The engine is
+    // responsible for advancing the bar pointer before invoking us when
+    // NEXT_BAR_OPEN is configured.
     Price base_price;
     switch (order.type) {
         case OrderType::MARKET:
-            base_price = (order.side == OrderSide::BUY) ? current_data.high : current_data.low;
+            base_price = base_price_for_bar(order.side, current_data);
             break;
         case OrderType::LIMIT:
             base_price = order.price;

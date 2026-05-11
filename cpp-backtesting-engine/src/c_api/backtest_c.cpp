@@ -51,6 +51,19 @@ static backtesting::BacktestConfig config_from_json(const nlohmann::json& j) {
     cfg.data_interval = j.value("data_interval", std::string("1d"));
     cfg.api_key = j.value("api_key", std::string(""));
 
+    // Deterministic seed (0 leaves slippage RNG seeded with 0, which is fully reproducible).
+    cfg.seed = j.value("seed", std::uint64_t{0});
+
+    {
+        // Execution model: defaults preserved for backward compatibility.
+        // C-API consumers should set this to "next_bar_open" to eliminate intra-bar look-ahead.
+        std::string model = j.value("execution_model", std::string(""));
+        if (model == "next_bar_open")            cfg.execution_model = backtesting::ExecutionModel::NEXT_BAR_OPEN;
+        else if (model == "current_bar_open")    cfg.execution_model = backtesting::ExecutionModel::CURRENT_BAR_OPEN;
+        else if (model == "current_bar_close")   cfg.execution_model = backtesting::ExecutionModel::CURRENT_BAR_CLOSE;
+        else if (model == "worst_of_bar")        cfg.execution_model = backtesting::ExecutionModel::WORST_OF_BAR;
+    }
+
     cfg.strategy_name = j.value("strategy_name", std::string("moving_average"));
     if (j.contains("strategy_params") && j["strategy_params"].is_object()) {
         for (auto it = j["strategy_params"].begin(); it != j["strategy_params"].end(); ++it) {
