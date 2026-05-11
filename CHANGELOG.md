@@ -4,6 +4,11 @@ All notable changes to this project should be documented here.
 
 ## Unreleased
 
+## 1.1.0 - 2026-05-11
+
+Correctness-focused minor release. Default behavior is preserved; the new
+`execution_model` field is a public API addition.
+
 - Correctness: `BacktestConfig::execution_model` enum (`next_bar_open`, `current_bar_open`,
   `current_bar_close`, `worst_of_bar`). Default remains `worst_of_bar` for backward
   compatibility, but library consumers are encouraged to select `next_bar_open` to
@@ -15,8 +20,13 @@ All notable changes to this project should be documented here.
 - Correctness: `BacktestConfig::validate()` is now truly `const`. Defaulting of
   `account_type`/`market_type` moved into `BacktestConfig::normalize()`, which is called
   automatically by `BacktestEngine::configure()` and `create_from_config()`.
-- Tests: added `test_utc_timestamp`, `test_execution_model`, `test_config_validate_const`.
-- (next) CMake: vcpkg-friendly dependency discovery (`find_package`), optional TA-Lib, and consumer CI verification.
+- Determinism: `BacktestConfig::seed` plumbed through the C-API JSON config so library
+  consumers can request fully reproducible slippage from outside C++.
+- CMake: vcpkg-friendly dependency discovery (`find_package`), optional TA-Lib, and
+  consumer CI verification.
+- Tests: added `test_utc_timestamp`, `test_execution_model`, `test_config_validate_const`
+  (in addition to the existing `test_csv_date_filter`, `test_risk_exposure_units`,
+  `test_determinism_execution_seed`, `test_realized_pnl_fifo`).
 
 ## 1.0.1
 
