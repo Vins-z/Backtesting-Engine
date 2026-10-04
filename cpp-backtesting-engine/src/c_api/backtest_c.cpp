@@ -64,6 +64,20 @@ static backtesting::BacktestConfig config_from_json(const nlohmann::json& j) {
         else if (model == "worst_of_bar")        cfg.execution_model = backtesting::ExecutionModel::WORST_OF_BAR;
     }
 
+    cfg.output_path = j.value("output_path", std::string(""));
+    cfg.verbose_logging = j.value("verbose_logging", false);
+    cfg.max_concurrent_positions = j.value("max_concurrent_positions", 0);
+
+    cfg.account_type = j.value("account_type", std::string("CASH"));
+    cfg.market_type = j.value("market_type", std::string("OTHER"));
+
+    // Risk configuration
+    cfg.max_position_size = j.value("max_position_size", 1.0);
+    cfg.max_portfolio_risk = j.value("max_portfolio_risk", 0.02);
+    cfg.stop_loss_percentage = j.value("stop_loss_percentage", j.value("stop_loss", 0.05));
+    cfg.max_daily_loss = j.value("max_daily_loss", 0.05);
+
+    // Strategy parameters
     cfg.strategy_name = j.value("strategy_name", std::string("moving_average"));
     if (j.contains("strategy_params") && j["strategy_params"].is_object()) {
         for (auto it = j["strategy_params"].begin(); it != j["strategy_params"].end(); ++it) {
@@ -73,11 +87,20 @@ static backtesting::BacktestConfig config_from_json(const nlohmann::json& j) {
         }
     }
 
+    if (j.contains("strategy_string_params") && j["strategy_string_params"].is_object()) {
+        for (auto it = j["strategy_string_params"].begin(); it != j["strategy_string_params"].end(); ++it) {
+            if (it.value().is_string()) {
+                cfg.strategy_string_params[it.key()] = it.value().get<std::string>();
+            }
+        }
+    }
+
     // Optional raw strategy JSON passthrough.
     if (j.contains("strategy_definition_json") && j["strategy_definition_json"].is_object()) {
         cfg.strategy_definition_json = j["strategy_definition_json"];
     }
 
+    cfg.normalize();
     return cfg;
 }
 

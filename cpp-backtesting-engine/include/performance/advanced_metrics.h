@@ -98,9 +98,25 @@ public:
 private:
     // Helper methods
     std::vector<double> calculate_returns(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
-    double calculate_drawdown_metrics(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
+    std::pair<double, double> calculate_drawdown_metrics(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
     double calculate_ulcer_index(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
     std::vector<double> calculate_monthly_returns(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
+    double calculate_calmar_ratio(const std::vector<std::pair<Timestamp, Price>>& equity_curve, const std::vector<double>& returns) const;
+    double calculate_sortino_ratio(const std::vector<double>& returns, double risk_free_rate) const;
+    double calculate_information_ratio(const std::vector<double>& returns, double risk_free_rate) const;
+    double calculate_treynor_ratio(const std::vector<double>& returns, double risk_free_rate) const;
+    double calculate_jensen_alpha(const std::vector<double>& returns, double risk_free_rate) const;
+    double calculate_recovery_factor(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
+    void calculate_trade_metrics(const std::vector<Fill>& trades, AdvancedMetrics& metrics) const;
+    double calculate_downside_deviation(const std::vector<double>& returns) const;
+    double calculate_upside_deviation(const std::vector<double>& returns) const;
+    double calculate_gain_to_pain_ratio(const std::vector<Fill>& trades) const;
+    double calculate_profit_factor_ratio(const std::vector<Fill>& trades) const;
+    double calculate_risk_reward_ratio(const std::vector<Fill>& trades) const;
+    double calculate_payoff_ratio(const std::vector<Fill>& trades) const;
+    double calculate_regime_adaptation(const std::vector<Fill>& trades) const;
+    double calculate_volatility(const std::vector<double>& returns) const;
+    double calculate_max_drawdown(const std::vector<std::pair<Timestamp, Price>>& equity_curve) const;
 };
 
 } // namespace backtesting

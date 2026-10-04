@@ -53,7 +53,7 @@ using ReplayEventCallback = std::function<void(const nlohmann::json&)>;
 class ReplayEngine {
 public:
     ReplayEngine();
-    ~ReplayEngine() = default;
+    ~ReplayEngine();
     
     // Configuration
     bool configure(const ReplayConfig& config);

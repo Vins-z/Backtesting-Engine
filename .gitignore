@@ -3,7 +3,7 @@
 node_modules/
 
 # Backend build outputs and caches
-/cpp-backtesting-engine/build/
+/cpp-backtesting-engine/build*/
 /cpp-backtesting-engine/cache/
 /cpp-backtesting-engine/server.log
 /cpp-backtesting-engine/*.log

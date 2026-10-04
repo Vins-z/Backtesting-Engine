@@ -256,6 +256,9 @@ BacktestResult BacktestEngine::run_backtest() {
         is_running_ = true;
         current_bar_ = 0;
         ohlc_history_.clear();
+        if (strategy_) {
+            strategy_->reset();
+        }
 
         // Main backtest loop
         while (is_running_ && data_handler_->has_next()) {
@@ -795,10 +798,9 @@ bool BacktestEngine::load_data() {
                 progress_callback_(evt);
             }
             
-            // Initialize strategy with the symbol's historical series before the run
+            // Reset strategy state before backtest run to ensure no lookahead bias
             if (strategy_) {
-                logger_->info("Initializing strategy with {} data points for symbol: {}", series.size(), symbol);
-                strategy_->initialize(series);
+                strategy_->reset();
             }
         }
         logger_->info("Data loading completed successfully for all symbols");
@@ -972,48 +974,78 @@ nlohmann::json BacktestResult::to_json() const {
         j["trades"].push_back(trade_json);
     }
 
-    // Round-trip trades (pair BUY then SELL per symbol for entry/exit and P&L)
+    // Round-trip trades using FIFO lots per symbol (handles partial fills and multiple entries)
     j["round_trips"] = nlohmann::json::array();
-    std::unordered_map<std::string, std::vector<Fill>> symbol_fills;
-    for (const auto& f : trade_history) {
-        symbol_fills[f.symbol].push_back(f);
-    }
-    for (const auto& [symbol, list] : symbol_fills) {
-        // Sort fills by timestamp so round-trips are paired chronologically
-        std::vector<Fill> sorted_list = list;
-        std::sort(sorted_list.begin(), sorted_list.end(),
-                  [](const Fill& a, const Fill& b) { return a.timestamp < b.timestamp; });
-        std::vector<Fill> buys, sells;
-        for (const auto& f : sorted_list) {
-            if (f.side == OrderSide::BUY) buys.push_back(f);
-            else sells.push_back(f);
-        }
-        size_t n = std::min(buys.size(), sells.size());
-        for (size_t i = 0; i < n; ++i) {
-            const Fill& buy = buys[i];
-            const Fill& sell = sells[i];
-            Quantity qty = std::min(buy.quantity, sell.quantity);
-            Price entry_price = buy.price;
-            Price exit_price = sell.price;
-            Price pnl = (exit_price - entry_price) * qty - buy.commission - sell.commission;
-            Price cost_basis = entry_price * qty;
-            double pnl_pct = (cost_basis > 0.0) ? (pnl / cost_basis * 100.0) : 0.0;
-            nlohmann::json rt;
-            rt["id"] = std::to_string(static_cast<int>(j["round_trips"].size())) + "_" + symbol;
-            rt["entryDate"] = fmt_ts_datetime(buy.timestamp);
-            rt["exitDate"] = fmt_ts_datetime(sell.timestamp);
-            rt["entryPrice"] = entry_price;
-            rt["exitPrice"] = exit_price;
-            rt["quantity"] = qty;
-            rt["pnl"] = pnl;
-            rt["pnlPercent"] = pnl_pct;
-            rt["direction"] = "LONG";
-            rt["symbol"] = symbol;
-            if (!buy.regime.empty()) rt["regime"] = buy.regime;
-            if (buy.volatility_pct > 0.0) rt["volatility_pct"] = buy.volatility_pct;
-            if (buy.atr_at_entry > 0.0) rt["atr_at_entry"] = buy.atr_at_entry;
-            if (!buy.filter_reason.empty()) rt["filter_reason"] = buy.filter_reason;
-            j["round_trips"].push_back(rt);
+    struct FIFOLot {
+        Quantity quantity;
+        Price price;
+        Price commission_per_share;
+        Timestamp timestamp;
+        std::string regime;
+        double volatility_pct;
+        double atr_at_entry;
+        std::string filter_reason;
+    };
+    std::unordered_map<std::string, std::deque<FIFOLot>> open_lots;
+
+    std::vector<Fill> sorted_trades = trade_history;
+    std::sort(sorted_trades.begin(), sorted_trades.end(),
+              [](const Fill& a, const Fill& b) { return a.timestamp < b.timestamp; });
+
+    for (const auto& f : sorted_trades) {
+        if (f.quantity <= 0 || f.price <= 0.0) continue;
+
+        if (f.side == OrderSide::BUY) {
+            Price comm_per_share = (f.quantity > 0) ? (f.commission / f.quantity) : 0.0;
+            open_lots[f.symbol].push_back(FIFOLot{
+                f.quantity,
+                f.price,
+                comm_per_share,
+                f.timestamp,
+                f.regime,
+                f.volatility_pct,
+                f.atr_at_entry,
+                f.filter_reason
+            });
+        } else if (f.side == OrderSide::SELL) {
+            Quantity remaining = f.quantity;
+            Price sell_comm_per_share = (f.quantity > 0) ? (f.commission / f.quantity) : 0.0;
+            auto& lots = open_lots[f.symbol];
+
+            while (remaining > 0 && !lots.empty()) {
+                FIFOLot& lot = lots.front();
+                Quantity matched = std::min(remaining, lot.quantity);
+                Price entry_price = lot.price;
+                Price exit_price = f.price;
+                Price buy_comm = lot.commission_per_share * matched;
+                Price sell_comm = sell_comm_per_share * matched;
+                Price pnl = (exit_price - entry_price) * matched - buy_comm - sell_comm;
+                Price cost_basis = entry_price * matched;
+                double pnl_pct = (cost_basis > 0.0) ? (pnl / cost_basis * 100.0) : 0.0;
+
+                nlohmann::json rt;
+                rt["id"] = std::to_string(static_cast<int>(j["round_trips"].size())) + "_" + f.symbol;
+                rt["entryDate"] = fmt_ts_datetime(lot.timestamp);
+                rt["exitDate"] = fmt_ts_datetime(f.timestamp);
+                rt["entryPrice"] = entry_price;
+                rt["exitPrice"] = exit_price;
+                rt["quantity"] = matched;
+                rt["pnl"] = pnl;
+                rt["pnlPercent"] = pnl_pct;
+                rt["direction"] = "LONG";
+                rt["symbol"] = f.symbol;
+                if (!lot.regime.empty()) rt["regime"] = lot.regime;
+                if (lot.volatility_pct > 0.0) rt["volatility_pct"] = lot.volatility_pct;
+                if (lot.atr_at_entry > 0.0) rt["atr_at_entry"] = lot.atr_at_entry;
+                if (!lot.filter_reason.empty()) rt["filter_reason"] = lot.filter_reason;
+                j["round_trips"].push_back(rt);
+
+                lot.quantity -= matched;
+                remaining -= matched;
+                if (lot.quantity <= 0) {
+                    lots.pop_front();
+                }
+            }
         }
     }
     

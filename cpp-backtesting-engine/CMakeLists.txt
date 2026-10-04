@@ -17,6 +17,15 @@ function(be_target_compile_options name)
     )
 endfunction()
 
+# Set Homebrew paths for macOS (skip when building under vcpkg)
+if(APPLE AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(HOMEBREW_PREFIX "/opt/homebrew")
+    list(PREPEND CMAKE_PREFIX_PATH "${HOMEBREW_PREFIX}")
+    list(PREPEND CMAKE_LIBRARY_PATH "${HOMEBREW_PREFIX}/lib")
+    list(PREPEND CMAKE_INCLUDE_PATH "${HOMEBREW_PREFIX}/include")
+    message(STATUS "Using Homebrew prefix: ${HOMEBREW_PREFIX}")
+endif()
+
 # Find required packages
 find_package(Eigen3 REQUIRED)
 find_package(nlohmann_json REQUIRED CONFIG)
@@ -24,15 +33,6 @@ find_package(spdlog REQUIRED CONFIG)
 find_package(CURL REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(Threads REQUIRED)
-
-# Set Homebrew paths for macOS (skip when building under vcpkg)
-if(APPLE AND NOT DEFINED VCPKG_TARGET_TRIPLET)
-    set(HOMEBREW_PREFIX "/opt/homebrew")
-    set(CMAKE_PREFIX_PATH "${HOMEBREW_PREFIX}" ${CMAKE_PREFIX_PATH})
-    set(CMAKE_LIBRARY_PATH "${HOMEBREW_PREFIX}/lib" ${CMAKE_LIBRARY_PATH})
-    set(CMAKE_INCLUDE_PATH "${HOMEBREW_PREFIX}/include" ${CMAKE_INCLUDE_PATH})
-    message(STATUS "Using Homebrew prefix: ${HOMEBREW_PREFIX}")
-endif()
 
 # Optional TA-Lib
 option(BACKTESTINGENGINE_ENABLE_TALIB "Find and link optional TA-Lib" ON)
@@ -56,6 +56,7 @@ endif()
 set(CORE_SOURCES
     src/context/regime_classifier.cpp
     src/engine/backtest_engine.cpp
+    src/engine/replay_engine.cpp
     src/strategy/strategy.cpp
     src/strategy/strategy_factory.cpp
     src/strategy/moving_average_strategy.cpp
@@ -68,6 +69,7 @@ set(CORE_SOURCES
     src/strategy/code_generator.cpp
     src/data/data_handler_factory.cpp
     src/data/csv_data_handler.cpp
+    src/data/real_time_data_handler.cpp
     src/data/api_data_handler.cpp
     src/data/alpha_vantage_handler.cpp
     src/data/yfinance_handler.cpp
@@ -84,6 +86,7 @@ set(CORE_SOURCES
     src/risk/risk_manager.cpp
     src/risk/advanced_risk_manager.cpp
     src/performance/performance_analyzer.cpp
+    src/performance/advanced_metrics.cpp
 )
 
 # C API wrapper (optional but built by default for easier bindings)
@@ -185,112 +188,35 @@ if(BACKTESTINGENGINE_BUILD_TOOLS)
 endif()
 
 if(BACKTESTINGENGINE_BUILD_TESTS)
-    add_executable(test_csv_date_filter
-        tests/csv_data_handler_date_filter_test.cpp
-        ${CORE_SOURCES}
-    )
+    add_executable(test_csv_date_filter tests/csv_data_handler_date_filter_test.cpp)
+    target_link_libraries(test_csv_date_filter PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    add_executable(test_risk_exposure_units
-        tests/risk_exposure_units_test.cpp
-        ${CORE_SOURCES}
-    )
+    add_executable(test_risk_exposure_units tests/risk_exposure_units_test.cpp)
+    target_link_libraries(test_risk_exposure_units PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    add_executable(test_determinism_execution_seed
-        tests/determinism_execution_seed_test.cpp
-        ${CORE_SOURCES}
-    )
+    add_executable(test_determinism_execution_seed tests/determinism_execution_seed_test.cpp)
+    target_link_libraries(test_determinism_execution_seed PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    add_executable(test_realized_pnl_fifo
-        tests/realized_pnl_fifo_test.cpp
-        ${CORE_SOURCES}
-    )
+    add_executable(test_realized_pnl_fifo tests/realized_pnl_fifo_test.cpp)
+    target_link_libraries(test_realized_pnl_fifo PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    add_executable(test_utc_timestamp
-        tests/utc_timestamp_test.cpp
-    )
-
-    add_executable(test_execution_model
-        tests/execution_model_test.cpp
-        ${CORE_SOURCES}
-    )
-
-    add_executable(test_config_validate_const
-        tests/config_validate_const_test.cpp
-        ${CORE_SOURCES}
-    )
-
-    # Tests are built from standalone translation units (they don't automatically
-    # pick up include paths from the shared library target since they link none).
-    target_include_directories(test_csv_date_filter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(test_risk_exposure_units PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(test_determinism_execution_seed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(test_realized_pnl_fifo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_executable(test_utc_timestamp tests/utc_timestamp_test.cpp)
     target_include_directories(test_utc_timestamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(test_execution_model PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_include_directories(test_config_validate_const PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-    target_link_libraries(test_csv_date_filter
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    add_executable(test_execution_model tests/execution_model_test.cpp)
+    target_link_libraries(test_execution_model PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    target_link_libraries(test_risk_exposure_units
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    add_executable(test_config_validate_const tests/config_validate_const_test.cpp)
+    target_link_libraries(test_config_validate_const PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    target_link_libraries(test_determinism_execution_seed
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    add_executable(test_multi_symbol_csv tests/multi_symbol_csv_test.cpp)
+    target_link_libraries(test_multi_symbol_csv PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    target_link_libraries(test_realized_pnl_fifo
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    add_executable(test_trade_metrics tests/trade_metrics_test.cpp)
+    target_link_libraries(test_trade_metrics PRIVATE BacktestingEngine::backtesting_engine_shared)
 
-    # test_utc_timestamp uses only headers from common/time_utils.h and the
-    # standard library; no third-party deps required.
-
-    target_link_libraries(test_execution_model
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
-
-    target_link_libraries(test_config_validate_const
-        PRIVATE
-        Eigen3::Eigen
-        spdlog::spdlog
-        CURL::libcurl
-        yaml-cpp::yaml-cpp
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    add_executable(test_risk_short_exposure tests/risk_short_exposure_test.cpp)
+    target_link_libraries(test_risk_short_exposure PRIVATE BacktestingEngine::backtesting_engine_shared)
 
     add_test(NAME test_csv_date_filter COMMAND test_csv_date_filter)
     add_test(NAME test_risk_exposure_units COMMAND test_risk_exposure_units)
@@ -299,6 +225,9 @@ if(BACKTESTINGENGINE_BUILD_TESTS)
     add_test(NAME test_utc_timestamp COMMAND test_utc_timestamp)
     add_test(NAME test_execution_model COMMAND test_execution_model)
     add_test(NAME test_config_validate_const COMMAND test_config_validate_const)
+    add_test(NAME test_multi_symbol_csv COMMAND test_multi_symbol_csv)
+    add_test(NAME test_trade_metrics COMMAND test_trade_metrics)
+    add_test(NAME test_risk_short_exposure COMMAND test_risk_short_exposure)
 endif()
 
 # Examples

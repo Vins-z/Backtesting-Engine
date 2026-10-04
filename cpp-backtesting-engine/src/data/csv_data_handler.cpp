@@ -37,19 +37,29 @@ bool CSVDataHandler::load_symbol_data(
         end_ts = parse_timestamp(end_date);
     }
     
-    symbols_.push_back(symbol);
+    if (std::find(symbols_.begin(), symbols_.end(), symbol) == symbols_.end()) {
+        symbols_.push_back(symbol);
+    }
     
     // Combine all symbol data into current_data_ for iteration
     if (symbol_data_.find(symbol) != symbol_data_.end()) {
         auto& series = symbol_data_[symbol];
         std::vector<OHLC> filtered;
         filtered.reserve(series.size());
-        for (const auto& bar : series) {
+        for (auto& bar : series) {
+            bar.symbol = symbol;
             if (has_start && bar.timestamp < start_ts) continue;
             if (has_end && bar.timestamp > end_ts) continue;
             filtered.push_back(bar);
         }
         series = std::move(filtered);
+
+        // Remove previous bars for this symbol if reloading
+        current_data_.erase(
+            std::remove_if(current_data_.begin(), current_data_.end(),
+                [&](const OHLC& b) { return b.symbol == symbol; }),
+            current_data_.end()
+        );
         current_data_.insert(current_data_.end(), series.begin(), series.end());
     }
     
@@ -170,9 +180,12 @@ bool CSVDataHandler::load_csv_file(const std::string& filename) {
         return false;
     }
     
-    // Extract symbol from filename
-    std::string symbol = filename.substr(filename.find_last_of("/") + 1);
-    symbol = symbol.substr(0, symbol.find_last_of("."));
+    // Extract symbol from filename portably
+    std::filesystem::path file_path(filename);
+    std::string symbol = file_path.stem().string();
+    for (auto& bar : data) {
+        bar.symbol = symbol;
+    }
     
     symbol_data_[symbol] = data;
     return true;
