@@ -327,6 +327,15 @@ Signal MeanReversionStrategy::generate_signal(
     }
     
     Signal signal = determine_mean_reversion_signal(current_data);
+
+    // Use portfolio state to avoid emitting signals that are not actionable.
+    // This makes strategy outputs consistent for consumers integrating the engine as a library.
+    const auto pos = portfolio.get_position(symbol);
+    if (signal == Signal::BUY && pos.is_open()) {
+        signal = Signal::NONE;
+    } else if (signal == Signal::SELL && !pos.is_open()) {
+        signal = Signal::NONE;
+    }
     
     // Update position tracking
     if (signal != Signal::NONE) {
@@ -408,7 +417,7 @@ bool MeanReversionStrategy::is_ready() const {
 }
 
 void MeanReversionStrategy::calculate_bollinger_bands() {
-    if (price_history_.size() < bollinger_period_) {
+    if (price_history_.size() < static_cast<size_t>(bollinger_period_)) {
         return;
     }
     
@@ -443,7 +452,7 @@ void MeanReversionStrategy::calculate_bollinger_bands() {
 }
 
 double MeanReversionStrategy::calculate_current_rsi() const {
-    if (price_history_.size() < rsi_period_ + 1) {
+    if (price_history_.size() < static_cast<size_t>(rsi_period_ + 1)) {
         return 50.0;
     }
     

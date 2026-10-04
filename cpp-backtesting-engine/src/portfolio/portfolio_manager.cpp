@@ -147,7 +147,7 @@ void PortfolioManager::update_market_data(const std::string& symbol, const OHLC&
     }
     
     auto& returns = symbol_returns_[symbol];
-    if (prev_price > 0.0 && prev_price != data.close) {
+    if (prev_price > 0.0) {
         Price current_return = (data.close - prev_price) / prev_price;
         returns.push_back(current_return);
         
@@ -177,7 +177,8 @@ void PortfolioManager::update_portfolio(const Timestamp& current_time) {
             position.market_value = std::abs(position.quantity) * current_price;
             position.unrealized_pnl = (current_price - position.avg_price) * position.quantity;
             
-            total_value_ += position.market_value;
+            // For long positions quantity > 0 (adds value); for short positions quantity < 0 (subtracts liability)
+            total_value_ += position.quantity * current_price;
             total_exposure += position.market_value;
             
             // Update days held
@@ -402,11 +403,52 @@ void PortfolioManager::update_fill(const Fill& fill) {
         }
     }
     
-    // Update position with fill
+    Fill recorded_fill = fill;
+
+    // Update lot ledger + realized P&L before mutating position state.
+    if (fill.side == OrderSide::BUY) {
+        // Allocate commission per share into the lot cost basis.
+        Price cost_per_share = fill.price;
+        if (fill.quantity > 0) {
+            cost_per_share += (fill.commission / fill.quantity);
+        }
+        open_lots_[fill.symbol].push_back(Lot{fill.quantity, cost_per_share});
+    } else if (fill.side == OrderSide::SELL) {
+        Quantity remaining = fill.quantity;
+        Price proceeds_per_share = fill.price;
+        if (fill.quantity > 0) {
+            proceeds_per_share -= (fill.commission / fill.quantity);
+        }
+
+        Price sell_realized_pnl = 0.0;
+        auto& lots = open_lots_[fill.symbol];
+        while (remaining > 0 && !lots.empty()) {
+            Lot& lot = lots.front();
+            Quantity matched = std::min(remaining, lot.quantity);
+            Price pnl = (proceeds_per_share - lot.cost_per_share) * matched;
+            realized_pnl_total_ += pnl;
+            realized_pnl_by_symbol_[fill.symbol] += pnl;
+            sell_realized_pnl += pnl;
+
+            lot.quantity -= matched;
+            remaining -= matched;
+            if (lot.quantity <= 0) {
+                lots.pop_front();
+            }
+        }
+        recorded_fill.pnl = sell_realized_pnl;
+
+        // If we sold more than we had in lots, something is inconsistent; keep state safe.
+        if (remaining > 0) {
+            logger_->error("Lot ledger underflow for {}: sold {}, unmatched {}", fill.symbol, fill.quantity, remaining);
+        }
+    }
+
+    // Update position with fill (cash + avg price + qty)
     update_position(fill);
     
     // Record in trade history
-    trade_history_.push_back(fill);
+    trade_history_.push_back(recorded_fill);
     
     // Log fill for debugging and verification
     logger_->debug("Portfolio updated with fill: {} {} {} @ ${:.2f}, new cash=${:.2f}", 
@@ -529,19 +571,7 @@ Price PortfolioManager::get_unrealized_pnl() const {
 }
 
 Price PortfolioManager::get_realized_pnl() const {
-    Price realized = 0;
-    std::unordered_map<std::string, Price> symbol_realized;
-    
-    for (const auto& fill : trade_history_) {
-        if (fill.side == OrderSide::SELL) {
-            // Calculate realized P&L on sell
-            auto& position = positions_.at(fill.symbol);
-            Price profit = (fill.price - position.avg_price) * fill.quantity;
-            realized += profit;
-        }
-    }
-    
-    return realized;
+    return realized_pnl_total_;
 }
 
 Price PortfolioManager::get_total_return() const {
@@ -552,8 +582,12 @@ void PortfolioManager::update_position(const Fill& fill) {
     EnhancedPosition& position = positions_[fill.symbol];
     
     if (fill.side == OrderSide::BUY) {
-        // Update average price
-        Price total_cost = position.quantity * position.avg_price + fill.quantity * fill.price;
+        // Update average price including allocated commission per share.
+        Price buy_cost_per_share = fill.price;
+        if (fill.quantity > 0) {
+            buy_cost_per_share += (fill.commission / fill.quantity);
+        }
+        Price total_cost = position.quantity * position.avg_price + fill.quantity * buy_cost_per_share;
         position.quantity += fill.quantity;
         position.avg_price = total_cost / position.quantity;
         
@@ -561,6 +595,9 @@ void PortfolioManager::update_position(const Fill& fill) {
         current_cash_ -= fill.quantity * fill.price + fill.commission;
     } else if (fill.side == OrderSide::SELL) {
         position.quantity -= fill.quantity;
+
+        // Update realized P&L (for reporting) from ledger totals.
+        position.realized_pnl = realized_pnl_by_symbol_[fill.symbol];
         
         // Update cash
         current_cash_ += fill.quantity * fill.price - fill.commission;
@@ -1073,60 +1110,60 @@ PortfolioStats PortfolioManager::calculate_portfolio_stats() const {
         }
     }
     
-    // Trade statistics
-    stats.total_trades = trade_history_.size();
+    // Trade statistics using FIFO round-trip trades (matching PerformanceAnalyzer)
+    std::unordered_map<std::string, std::deque<Lot>> lots_by_symbol;
+    std::vector<Price> trade_pnls;
+
+    for (const auto& fill : trade_history_) {
+        if (fill.quantity <= 0 || fill.price <= 0.0) continue;
+
+        if (fill.side == OrderSide::BUY) {
+            Price cost_per_share = fill.price;
+            cost_per_share += (fill.commission / fill.quantity);
+            lots_by_symbol[fill.symbol].push_back(Lot{fill.quantity, cost_per_share});
+        } else if (fill.side == OrderSide::SELL) {
+            Quantity remaining = fill.quantity;
+            Price proceeds_per_share = fill.price - (fill.commission / fill.quantity);
+
+            auto& lots = lots_by_symbol[fill.symbol];
+            while (remaining > 0 && !lots.empty()) {
+                Lot& lot = lots.front();
+                Quantity matched = std::min(remaining, lot.quantity);
+                trade_pnls.push_back((proceeds_per_share - lot.cost_per_share) * matched);
+                lot.quantity -= matched;
+                remaining -= matched;
+                if (lot.quantity <= 0) lots.pop_front();
+            }
+        }
+    }
+
+    stats.total_trades = static_cast<int>(trade_pnls.size());
     stats.winning_trades = 0;
     stats.losing_trades = 0;
     Price total_wins = 0.0;
     Price total_losses = 0.0;
     stats.largest_win = 0.0;
     stats.largest_loss = 0.0;
-    
-    // Calculate realized P&L per trade
-    std::unordered_map<std::string, std::vector<Fill>> symbol_trades;
-    for (const auto& fill : trade_history_) {
-        symbol_trades[fill.symbol].push_back(fill);
-    }
-    
-    for (const auto& [symbol, fills] : symbol_trades) {
-        Price total_cost = 0.0;
-        Quantity total_qty = 0.0;
-        
-        for (const auto& fill : fills) {
-            if (fill.side == OrderSide::BUY) {
-                total_cost += fill.price * fill.quantity + fill.commission + fill.slippage;
-                total_qty += fill.quantity;
-            } else if (fill.side == OrderSide::SELL) {
-                if (total_qty > 0) {
-                    Price avg_cost = total_cost / total_qty;
-                    Price trade_pnl = (fill.price - avg_cost) * fill.quantity - fill.commission - fill.slippage;
-                    
-                    if (trade_pnl > 0) {
-                        stats.winning_trades++;
-                        total_wins += trade_pnl;
-                        if (trade_pnl > stats.largest_win) {
-                            stats.largest_win = trade_pnl;
-                        }
-                    } else if (trade_pnl < 0) {
-                        stats.losing_trades++;
-                        total_losses += std::abs(trade_pnl);
-                        if (trade_pnl < stats.largest_loss) {
-                            stats.largest_loss = trade_pnl;
-                        }
-                    }
-                    
-                    total_cost -= avg_cost * fill.quantity;
-                    total_qty -= fill.quantity;
-                }
-            }
+
+    for (Price pnl : trade_pnls) {
+        if (pnl > 0.0) {
+            stats.winning_trades++;
+            total_wins += pnl;
+            stats.largest_win = std::max(stats.largest_win, pnl);
+        } else if (pnl < 0.0) {
+            stats.losing_trades++;
+            total_losses += std::abs(pnl);
+            stats.largest_loss = std::max(stats.largest_loss, std::abs(pnl));
         }
     }
-    
-    // Win rate
+
+    // Win rate based on round-trip trades
     if (stats.total_trades > 0) {
-        stats.win_rate = (static_cast<double>(stats.winning_trades) / stats.total_trades);
+        stats.win_rate = static_cast<double>(stats.winning_trades) / stats.total_trades;
+    } else {
+        stats.win_rate = 0.0;
     }
-    
+
     // Average win/loss
     if (stats.winning_trades > 0) {
         stats.average_win = total_wins / stats.winning_trades;
@@ -1134,26 +1171,43 @@ PortfolioStats PortfolioManager::calculate_portfolio_stats() const {
     if (stats.losing_trades > 0) {
         stats.average_loss = total_losses / stats.losing_trades;
     }
-    
+
     // Profit factor
-    if (total_losses > 0) {
+    if (total_losses > 0.0) {
         stats.profit_factor = total_wins / total_losses;
+    } else if (total_wins > 0.0) {
+        stats.profit_factor = std::numeric_limits<Price>::infinity();
+    } else {
+        stats.profit_factor = 0.0;
     }
-    
+
     // Sharpe ratio (simplified)
     if (stats.volatility > 0) {
         // Risk-free rate assumed to be 0 for simplicity
         stats.sharpe_ratio = stats.annualized_return / stats.volatility;
     }
-    
+
     // Calmar ratio
     if (stats.max_drawdown < 0 && std::abs(stats.max_drawdown) > 0.0001) {
         stats.calmar_ratio = stats.annualized_return / std::abs(stats.max_drawdown);
     }
-    
-    // Sortino ratio (simplified - uses volatility instead of downside deviation)
-    if (stats.volatility > 0) {
-        stats.sortino_ratio = stats.annualized_return / stats.volatility;
+
+    // Sortino ratio: downside deviation calculation
+    if (equity_curve_.size() > 1) {
+        std::vector<double> downside_sq;
+        for (size_t i = 1; i < equity_curve_.size(); ++i) {
+            double ret = (equity_curve_[i].second - equity_curve_[i-1].second) / equity_curve_[i-1].second;
+            if (ret < 0.0) {
+                downside_sq.push_back(ret * ret);
+            }
+        }
+        if (!downside_sq.empty()) {
+            double mean_downside_sq = std::accumulate(downside_sq.begin(), downside_sq.end(), 0.0) / downside_sq.size();
+            double downside_dev = std::sqrt(mean_downside_sq * 252.0);
+            if (downside_dev > 0.0) {
+                stats.sortino_ratio = stats.annualized_return / downside_dev;
+            }
+        }
     }
     
     // Exposure metrics

@@ -18,6 +18,7 @@ AdvancedMetrics AdvancedPerformanceAnalyzer::calculate_advanced_metrics(
     Price initial_capital,
     Price risk_free_rate
 ) const {
+    (void)initial_capital;
     AdvancedMetrics metrics;
     
     if (equity_curve.empty()) {
@@ -227,19 +228,31 @@ double AdvancedPerformanceAnalyzer::calculate_ulcer_index(
     return std::sqrt(avg_squared_dd);
 }
 
+namespace {
+static std::vector<double> extract_trade_pnls(const std::vector<Fill>& trades) {
+    std::vector<double> pnls;
+    for (const auto& trade : trades) {
+        if (trade.side == OrderSide::SELL || trade.pnl != 0.0) {
+            pnls.push_back(trade.pnl);
+        }
+    }
+    return pnls;
+}
+} // namespace
+
 void AdvancedPerformanceAnalyzer::calculate_trade_metrics(
     const std::vector<Fill>& trades,
     AdvancedMetrics& metrics
 ) const {
-    if (trades.empty()) return;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.empty()) return;
     
     std::vector<double> profits, losses;
     
-    for (const auto& trade : trades) {
-        double pnl = trade.pnl;
-        if (pnl > 0) {
+    for (double pnl : pnls) {
+        if (pnl > 0.0) {
             profits.push_back(pnl);
-        } else {
+        } else if (pnl < 0.0) {
             losses.push_back(std::abs(pnl));
         }
     }
@@ -258,12 +271,12 @@ void AdvancedPerformanceAnalyzer::calculate_trade_metrics(
     metrics.win_loss_ratio = metrics.avg_loss == 0.0 ? 0.0 : metrics.avg_win / metrics.avg_loss;
     
     // Expectancy
-    double win_rate = static_cast<double>(profits.size()) / trades.size();
-    metrics.expectancy = (win_rate * metrics.avg_win) - ((1 - win_rate) * metrics.avg_loss);
+    double win_rate = static_cast<double>(profits.size()) / pnls.size();
+    metrics.expectancy = (win_rate * metrics.avg_win) - ((1.0 - win_rate) * metrics.avg_loss);
     
     // Kelly criterion
-    if (metrics.avg_loss > 0.0) {
-        metrics.kelly_criterion = (win_rate * metrics.avg_win - (1 - win_rate) * metrics.avg_loss) / metrics.avg_win;
+    if (metrics.avg_loss > 0.0 && metrics.avg_win > 0.0) {
+        metrics.kelly_criterion = (win_rate * metrics.avg_win - (1.0 - win_rate) * metrics.avg_loss) / metrics.avg_win;
     } else {
         metrics.kelly_criterion = 0.0;
     }
@@ -345,6 +358,7 @@ double AdvancedPerformanceAnalyzer::calculate_cvar(
 std::vector<double> AdvancedPerformanceAnalyzer::calculate_monthly_returns(
     const std::vector<std::pair<Timestamp, Price>>& equity_curve
 ) const {
+    (void)equity_curve;
     std::vector<double> monthly_returns(12, 0.0);
     // Monthly return computation is not implemented yet in this build.
     // Return the pre-sized vector (initialized to zeros).
@@ -354,15 +368,16 @@ std::vector<double> AdvancedPerformanceAnalyzer::calculate_monthly_returns(
 double AdvancedPerformanceAnalyzer::calculate_gain_to_pain_ratio(
     const std::vector<Fill>& trades
 ) const {
-    if (trades.empty()) return 0.0;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.empty()) return 0.0;
     
     double total_gain = 0.0, total_pain = 0.0;
     
-    for (const auto& trade : trades) {
-        if (trade.pnl > 0) {
-            total_gain += trade.pnl;
-        } else {
-            total_pain += std::abs(trade.pnl);
+    for (double pnl : pnls) {
+        if (pnl > 0.0) {
+            total_gain += pnl;
+        } else if (pnl < 0.0) {
+            total_pain += std::abs(pnl);
         }
     }
     
@@ -378,13 +393,14 @@ double AdvancedPerformanceAnalyzer::calculate_profit_factor_ratio(
 double AdvancedPerformanceAnalyzer::calculate_risk_reward_ratio(
     const std::vector<Fill>& trades
 ) const {
-    if (trades.empty()) return 0.0;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.empty()) return 0.0;
     
     double max_profit = 0.0, max_loss = 0.0;
     
-    for (const auto& trade : trades) {
-        if (trade.pnl > max_profit) max_profit = trade.pnl;
-        if (trade.pnl < -max_loss) max_loss = std::abs(trade.pnl);
+    for (double pnl : pnls) {
+        if (pnl > max_profit) max_profit = pnl;
+        if (pnl < -max_loss) max_loss = std::abs(pnl);
     }
     
     return max_loss == 0.0 ? 0.0 : max_profit / max_loss;
@@ -393,17 +409,18 @@ double AdvancedPerformanceAnalyzer::calculate_risk_reward_ratio(
 double AdvancedPerformanceAnalyzer::calculate_payoff_ratio(
     const std::vector<Fill>& trades
 ) const {
-    if (trades.empty()) return 0.0;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.empty()) return 0.0;
     
     double total_profit = 0.0, total_loss = 0.0;
     int profit_count = 0, loss_count = 0;
     
-    for (const auto& trade : trades) {
-        if (trade.pnl > 0) {
-            total_profit += trade.pnl;
+    for (double pnl : pnls) {
+        if (pnl > 0.0) {
+            total_profit += pnl;
             profit_count++;
-        } else {
-            total_loss += std::abs(trade.pnl);
+        } else if (pnl < 0.0) {
+            total_loss += std::abs(pnl);
             loss_count++;
         }
     }
@@ -417,13 +434,14 @@ double AdvancedPerformanceAnalyzer::calculate_payoff_ratio(
 double AdvancedPerformanceAnalyzer::calculate_strategy_consistency(
     const std::vector<Fill>& trades
 ) const {
-    if (trades.size() < 2) return 0.0;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.size() < 2) return 0.0;
     
     std::vector<double> consecutive_wins;
     int current_streak = 0;
     
-    for (const auto& trade : trades) {
-        if (trade.pnl > 0) {
+    for (double pnl : pnls) {
+        if (pnl > 0.0) {
             current_streak++;
         } else {
             if (current_streak > 0) {
@@ -440,38 +458,105 @@ double AdvancedPerformanceAnalyzer::calculate_strategy_consistency(
     if (consecutive_wins.empty()) return 0.0;
     
     double avg_streak = std::accumulate(consecutive_wins.begin(), consecutive_wins.end(), 0.0) / consecutive_wins.size();
-    return avg_streak / trades.size(); // Normalized consistency
+    return avg_streak / pnls.size(); // Normalized consistency
 }
 
 double AdvancedPerformanceAnalyzer::calculate_regime_adaptation(
     const std::vector<Fill>& trades
 ) const {
-    if (trades.size() < 10) return 0.0;
+    auto pnls = extract_trade_pnls(trades);
+    if (pnls.size() < 10) return 0.0;
     
     // Calculate performance in different time periods
-    int mid_point = trades.size() / 2;
-    std::vector<Fill> first_half(trades.begin(), trades.begin() + mid_point);
-    std::vector<Fill> second_half(trades.begin() + mid_point, trades.end());
-    
-    double first_performance = 0.0, second_performance = 0.0;
-    
-    for (const auto& trade : first_half) {
-        first_performance += trade.pnl;
-    }
-    
-    for (const auto& trade : second_half) {
-        second_performance += trade.pnl;
-    }
-    
-    // Normalize by number of trades
-    first_performance /= first_half.size();
-    second_performance /= second_half.size();
+    size_t mid_point = pnls.size() / 2;
+    double first_performance = std::accumulate(pnls.begin(), pnls.begin() + mid_point, 0.0) / mid_point;
+    double second_performance = std::accumulate(pnls.begin() + mid_point, pnls.end(), 0.0) / (pnls.size() - mid_point);
     
     // Adaptation score based on performance consistency
     double performance_diff = std::abs(first_performance - second_performance);
     double avg_performance = (first_performance + second_performance) / 2.0;
     
     return avg_performance == 0.0 ? 0.0 : 1.0 - (performance_diff / std::abs(avg_performance));
+}
+
+double AdvancedPerformanceAnalyzer::calculate_market_correlation(
+    const std::vector<std::pair<Timestamp, Price>>& equity_curve,
+    const std::vector<std::pair<Timestamp, Price>>& market_data
+) const {
+    if (equity_curve.size() < 2 || market_data.size() < 2) return 0.0;
+    auto eq_rets = calculate_returns(equity_curve);
+    auto mkt_rets = calculate_returns(market_data);
+    size_t n = std::min(eq_rets.size(), mkt_rets.size());
+    if (n < 2) return 0.0;
+
+    double mean_eq = 0.0, mean_mkt = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        mean_eq += eq_rets[eq_rets.size() - n + i];
+        mean_mkt += mkt_rets[mkt_rets.size() - n + i];
+    }
+    mean_eq /= n;
+    mean_mkt /= n;
+
+    double num = 0.0, denom_eq = 0.0, denom_mkt = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double d_eq = eq_rets[eq_rets.size() - n + i] - mean_eq;
+        double d_mkt = mkt_rets[mkt_rets.size() - n + i] - mean_mkt;
+        num += d_eq * d_mkt;
+        denom_eq += d_eq * d_eq;
+        denom_mkt += d_mkt * d_mkt;
+    }
+    double denom = std::sqrt(denom_eq * denom_mkt);
+    return (denom > 1e-12) ? (num / denom) : 0.0;
+}
+
+std::vector<std::string> AdvancedPerformanceAnalyzer::detect_market_regimes(
+    const std::vector<std::pair<Timestamp, Price>>& market_data
+) const {
+    std::vector<std::string> regimes;
+    if (market_data.empty()) return regimes;
+
+    regimes.reserve(market_data.size());
+    const size_t period = 20;
+    for (size_t i = 0; i < market_data.size(); ++i) {
+        if (i + 1 < period) {
+            regimes.push_back("UNKNOWN");
+            continue;
+        }
+        double sum = 0.0;
+        for (size_t j = i + 1 - period; j <= i; ++j) {
+            sum += market_data[j].second;
+        }
+        double sma = sum / period;
+        double current_price = market_data[i].second;
+        if (current_price > sma * 1.01) {
+            regimes.push_back("BULLISH");
+        } else if (current_price < sma * 0.99) {
+            regimes.push_back("BEARISH");
+        } else {
+            regimes.push_back("SIDEWAYS");
+        }
+    }
+    return regimes;
+}
+
+std::unordered_map<std::string, double> AdvancedPerformanceAnalyzer::suggest_optimizations(
+    const std::vector<Fill>& trades,
+    const AdvancedMetrics& metrics
+) const {
+    (void)trades;
+    std::unordered_map<std::string, double> suggestions;
+    
+    double half_kelly = std::max(0.01, std::min(0.25, metrics.kelly_criterion * 0.5));
+    suggestions["suggested_position_size"] = half_kelly;
+
+    if (metrics.avg_loss > 0.0) {
+        suggestions["suggested_stop_loss"] = std::max(0.01, std::min(0.10, metrics.avg_loss));
+    } else {
+        suggestions["suggested_stop_loss"] = 0.05;
+    }
+
+    suggestions["suggested_profit_target"] = suggestions["suggested_stop_loss"] * 2.0;
+    return suggestions;
 }
 
 double AdvancedPerformanceAnalyzer::calculate_volatility(

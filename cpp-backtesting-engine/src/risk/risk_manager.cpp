@@ -25,19 +25,25 @@ bool BasicRiskManager::check_signal(const SignalEvent& signal, const PortfolioMa
         return false;
     }
     
+    Price total_val = portfolio.get_total_value();
+    if (total_val <= 0.0) {
+        return false;
+    }
+    
     // For buy signals, check if we can afford the position
     if (signal.signal == Signal::BUY) {
         // Check position size limit
         auto position = portfolio.get_position(signal.symbol);
-        Price current_exposure = std::abs(position.quantity * position.market_value) / portfolio.get_total_value();
+        Price pos_value = std::abs(position.quantity) * (position.avg_price > 0.0 ? position.avg_price : (position.quantity != 0 ? position.market_value / std::abs(position.quantity) : 0.0));
+        Price current_exposure = pos_value / total_val;
         
         if (current_exposure >= max_position_size_) {
             return false;
         }
         
         // Check cash reserve
-        Price cash_after_trade = portfolio.get_cash() - (position.market_value * 0.1); // Estimate 10% allocation
-        if (cash_after_trade / portfolio.get_total_value() < min_cash_reserve_) {
+        Price cash_after_trade = portfolio.get_cash() - (pos_value * 0.1); // Estimate 10% allocation
+        if (cash_after_trade / total_val < min_cash_reserve_) {
             return false;
         }
     }
@@ -279,22 +285,33 @@ void BasicRiskManager::reset() {
 
 // Helper methods
 bool BasicRiskManager::check_position_size_limit(const Order& order, const PortfolioManager& portfolio) {
+    Price total_val = portfolio.get_total_value();
+    if (total_val <= 0.0) return false;
+
     auto position = portfolio.get_position(order.symbol);
-    Price new_exposure = std::abs((position.quantity + order.quantity) * order.price) / portfolio.get_total_value();
+    Quantity new_qty = (order.side == OrderSide::BUY)
+        ? (position.quantity + order.quantity)
+        : std::max(0.0, position.quantity - order.quantity);
+
+    Price new_exposure = std::abs(new_qty * order.price) / total_val;
     return new_exposure <= max_position_size_;
 }
 
 bool BasicRiskManager::check_portfolio_risk_limit(const Order& order, const PortfolioManager& portfolio) {
+    Price total_val = portfolio.get_total_value();
+    if (total_val <= 0.0) return false;
     // Simple risk check - ensure we don't exceed portfolio risk limit
     Price position_risk = calculate_position_risk(order.symbol, order.quantity, order.price);
-    return position_risk <= max_portfolio_risk_ * portfolio.get_total_value();
+    return position_risk <= max_portfolio_risk_ * total_val;
 }
 
 bool BasicRiskManager::check_cash_reserve_limit(const Order& order, const PortfolioManager& portfolio) {
     if (order.side == OrderSide::BUY) {
+        Price total_val = portfolio.get_total_value();
+        if (total_val <= 0.0) return false;
         Price order_cost = order.quantity * order.price * 1.001; // Include commission estimate
         Price remaining_cash = portfolio.get_cash() - order_cost;
-        return remaining_cash / portfolio.get_total_value() >= min_cash_reserve_;
+        return remaining_cash / total_val >= min_cash_reserve_;
     }
     return true;
 }
@@ -305,6 +322,7 @@ bool BasicRiskManager::check_daily_loss_limit(const PortfolioManager& portfolio)
 }
 
 Quantity BasicRiskManager::calculate_max_position_size(const Order& order, const PortfolioManager& portfolio) {
+    if (order.price <= 0.0) return 0;
     Price max_value = portfolio.get_total_value() * max_position_size_;
     return static_cast<Quantity>(max_value / order.price);
 }

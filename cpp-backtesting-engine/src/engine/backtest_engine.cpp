@@ -60,12 +60,14 @@ BacktestEngine::~BacktestEngine() {
 
 bool BacktestEngine::configure(const BacktestConfig& config) {
     config_ = config;
+    config_.normalize();
     return initialize_components();
 }
 
 bool BacktestEngine::configure_from_yaml(const std::string& yaml_file) {
     try {
         config_ = BacktestConfig::load_from_yaml(yaml_file);
+        config_.normalize();
         return initialize_components();
     } catch (const std::exception& e) {
         logger_->error("Failed to load config from YAML: {}", e.what());
@@ -167,13 +169,16 @@ bool BacktestEngine::initialize_components() {
         portfolio_manager_ = std::make_unique<PortfolioManager>(config_.initial_capital, risk_config);
         
         // Initialize execution handler - use RealisticExecutionHandler for industry-standard execution
-        // This provides proper market impact, realistic slippage, and better price execution
+        // This provides proper market impact, realistic slippage, and better price execution.
+        // The execution model is forwarded so the handler picks the right base price.
         execution_handler_ = std::make_unique<RealisticExecutionHandler>(
             config_.commission_rate,  // commission_rate
             1.0,                       // min_commission (minimum $1 per trade)
             0.005,                     // max_commission (0.5% max)
             config_.slippage_rate,     // slippage_rate
-            0.001                      // market_impact_factor (0.1% impact factor)
+            0.001,                     // market_impact_factor (0.1% impact factor)
+            config_.seed,              // seed (deterministic by default)
+            config_.execution_model    // bar-pricing convention
         );
         
         // Initialize risk manager with breakeven/trailing stop support from strategy definition
@@ -219,18 +224,19 @@ bool BacktestEngine::initialize_components() {
 
 BacktestResult BacktestEngine::run_backtest() {
     logger_->info("Starting backtest: {}", config_.name);
+    const auto run_start_wall = std::chrono::system_clock::now();
     start_time_ = std::chrono::high_resolution_clock::now();
     
     BacktestResult result;
     result.config = config_;
-    result.start_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(start_time_.time_since_epoch()).count());
+    result.start_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(run_start_wall.time_since_epoch()).count());
     
     try {
         if (progress_callback_) {
             nlohmann::json evt;
             evt["type"] = "backtest.start";
             evt["name"] = config_.name;
-            evt["start_time_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(start_time_.time_since_epoch()).count();
+            evt["start_time_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(run_start_wall.time_since_epoch()).count();
             evt["config"] = config_.to_json();
             // Include strategy params explicitly for richer logs
             evt["strategy_name"] = config_.strategy_name;
@@ -250,6 +256,9 @@ BacktestResult BacktestEngine::run_backtest() {
         is_running_ = true;
         current_bar_ = 0;
         ohlc_history_.clear();
+        if (strategy_) {
+            strategy_->reset();
+        }
 
         // Main backtest loop
         while (is_running_ && data_handler_->has_next()) {
@@ -317,9 +326,10 @@ BacktestResult BacktestEngine::run_backtest() {
         }
         
         // Finalize results
+        const auto run_end_wall = std::chrono::system_clock::now();
         end_time_ = std::chrono::high_resolution_clock::now();
         result.duration_seconds = std::chrono::duration<double>(end_time_ - start_time_).count();
-        result.end_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end_time_.time_since_epoch()).count());
+        result.end_time = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(run_end_wall.time_since_epoch()).count());
         
         // Calculate performance metrics
         result.metrics = performance_analyzer_->calculate_metrics(
@@ -421,6 +431,14 @@ double BacktestEngine::get_position_size_multiplier() const {
 void BacktestEngine::process_market_event(const MarketEvent& event) {
     // Update portfolio with current market data
     portfolio_manager_->update_market_data(event.symbol, event.data);
+
+    // Drain any NEXT_BAR_OPEN orders that were queued for this symbol on the
+    // previous bar. They execute against the just-ingested bar (using its open
+    // price via the execution model). This removes the intra-bar look-ahead
+    // present when fills used the same bar's high/low/close.
+    if (config_.execution_model == ExecutionModel::NEXT_BAR_OPEN) {
+        drain_pending_orders_for_symbol(event.symbol);
+    }
 
     // Build OHLC history for context (volatility, regime)
     ohlc_history_[event.symbol].push_back(event.data);
@@ -537,6 +555,31 @@ void BacktestEngine::process_order_event(const OrderEvent& event) {
         }
     }
 
+    // Under NEXT_BAR_OPEN, defer execution until the next MarketEvent for this symbol.
+    // The pending order is drained at the top of process_market_event on the next bar.
+    if (config_.execution_model == ExecutionModel::NEXT_BAR_OPEN) {
+        pending_next_bar_orders_[order.symbol].push_back(order);
+        return;
+    }
+
+    execute_order_immediate(std::move(order));
+}
+
+void BacktestEngine::drain_pending_orders_for_symbol(const std::string& symbol) {
+    auto it = pending_next_bar_orders_.find(symbol);
+    if (it == pending_next_bar_orders_.end() || it->second.empty()) {
+        return;
+    }
+    // Move the queue out so re-entry through execute_order_immediate cannot
+    // observe an inconsistent state.
+    std::vector<Order> orders = std::move(it->second);
+    pending_next_bar_orders_.erase(it);
+    for (auto& order : orders) {
+        execute_order_immediate(std::move(order));
+    }
+}
+
+void BacktestEngine::execute_order_immediate(Order order) {
     // Execute order - need to get current market data for execution
     auto current_data = portfolio_manager_->get_current_market_data(order.symbol);
     
@@ -611,14 +654,14 @@ void BacktestEngine::process_order_event(const OrderEvent& event) {
     } else {
         // Log failed fills for debugging - this should be rare but indicates an issue
         logger_->warn("Order {} failed to fill: {} {} shares requested @ ${:.2f}", 
-                     event.order.id, event.order.quantity,
-                     event.order.side == OrderSide::BUY ? "BUY" : "SELL",
-                     event.order.price);
+                     order.id, order.quantity,
+                     order.side == OrderSide::BUY ? "BUY" : "SELL",
+                     order.price);
         if (progress_callback_) {
             nlohmann::json evt;
             evt["type"] = "event.order_rejected";
-            evt["order_id"] = event.order.id;
-            evt["symbol"] = event.order.symbol;
+            evt["order_id"] = order.id;
+            evt["symbol"] = order.symbol;
             evt["reason"] = "Execution handler returned zero quantity";
             progress_callback_(evt);
         }
@@ -755,10 +798,9 @@ bool BacktestEngine::load_data() {
                 progress_callback_(evt);
             }
             
-            // Initialize strategy with the symbol's historical series before the run
+            // Reset strategy state before backtest run to ensure no lookahead bias
             if (strategy_) {
-                logger_->info("Initializing strategy with {} data points for symbol: {}", series.size(), symbol);
-                strategy_->initialize(series);
+                strategy_->reset();
             }
         }
         logger_->info("Data loading completed successfully for all symbols");
@@ -817,6 +859,18 @@ BacktestConfig BacktestConfig::load_from_yaml(const std::string& yaml_file) {
     cfg.api_key = config["data"]["api_key"].as<std::string>("");
     cfg.output_path = config["output"]["path"].as<std::string>();
     cfg.verbose_logging = config["output"]["verbose_logging"].as<bool>(false);
+    cfg.seed = config["backtest"]["seed"].as<std::uint64_t>(0);
+
+    // Optional execution model. Accepts "next_bar_open" (recommended),
+    // "current_bar_open", "current_bar_close", or "worst_of_bar" (legacy default).
+    if (config["execution"] && config["execution"]["model"]) {
+        const auto raw = config["execution"]["model"].as<std::string>("");
+        if (raw == "next_bar_open")            cfg.execution_model = ExecutionModel::NEXT_BAR_OPEN;
+        else if (raw == "current_bar_open")    cfg.execution_model = ExecutionModel::CURRENT_BAR_OPEN;
+        else if (raw == "current_bar_close")   cfg.execution_model = ExecutionModel::CURRENT_BAR_CLOSE;
+        else if (raw == "worst_of_bar")        cfg.execution_model = ExecutionModel::WORST_OF_BAR;
+    }
+
     cfg.account_type = "CASH";
     cfg.market_type = "OTHER";
     cfg.strategy_name = config["strategy"]["name"].as<std::string>();
@@ -842,6 +896,17 @@ nlohmann::json BacktestConfig::to_json() const {
     j["symbols"] = symbols;
     j["start_date"] = start_date;
     j["end_date"] = end_date;
+    j["seed"] = seed;
+    {
+        const char* model_name = "worst_of_bar";
+        switch (execution_model) {
+            case ExecutionModel::NEXT_BAR_OPEN:    model_name = "next_bar_open"; break;
+            case ExecutionModel::CURRENT_BAR_OPEN: model_name = "current_bar_open"; break;
+            case ExecutionModel::CURRENT_BAR_CLOSE:model_name = "current_bar_close"; break;
+            case ExecutionModel::WORST_OF_BAR:     model_name = "worst_of_bar"; break;
+        }
+        j["execution_model"] = model_name;
+    }
     j["initial_capital"] = initial_capital;
     j["commission_rate"] = commission_rate;
     j["slippage_rate"] = slippage_rate;
@@ -881,8 +946,14 @@ nlohmann::json BacktestResult::to_json() const {
     // ISO-style datetime formatter for trade timestamps (UTC)
     auto fmt_ts_datetime = [](Timestamp ts) {
         auto t = std::chrono::system_clock::to_time_t(ts);
+        std::tm tm_utc{};
+#if defined(_WIN32)
+        gmtime_s(&tm_utc, &t);
+#else
+        gmtime_r(&t, &tm_utc);
+#endif
         std::ostringstream oss;
-        oss << std::put_time(std::gmtime(&t), "%Y-%m-%dT%H:%M:%S");
+        oss << std::put_time(&tm_utc, "%Y-%m-%dT%H:%M:%S");
         return oss.str();
     };
 
@@ -903,48 +974,78 @@ nlohmann::json BacktestResult::to_json() const {
         j["trades"].push_back(trade_json);
     }
 
-    // Round-trip trades (pair BUY then SELL per symbol for entry/exit and P&L)
+    // Round-trip trades using FIFO lots per symbol (handles partial fills and multiple entries)
     j["round_trips"] = nlohmann::json::array();
-    std::unordered_map<std::string, std::vector<Fill>> symbol_fills;
-    for (const auto& f : trade_history) {
-        symbol_fills[f.symbol].push_back(f);
-    }
-    for (const auto& [symbol, list] : symbol_fills) {
-        // Sort fills by timestamp so round-trips are paired chronologically
-        std::vector<Fill> sorted_list = list;
-        std::sort(sorted_list.begin(), sorted_list.end(),
-                  [](const Fill& a, const Fill& b) { return a.timestamp < b.timestamp; });
-        std::vector<Fill> buys, sells;
-        for (const auto& f : sorted_list) {
-            if (f.side == OrderSide::BUY) buys.push_back(f);
-            else sells.push_back(f);
-        }
-        size_t n = std::min(buys.size(), sells.size());
-        for (size_t i = 0; i < n; ++i) {
-            const Fill& buy = buys[i];
-            const Fill& sell = sells[i];
-            Quantity qty = std::min(buy.quantity, sell.quantity);
-            Price entry_price = buy.price;
-            Price exit_price = sell.price;
-            Price pnl = (exit_price - entry_price) * qty - buy.commission - sell.commission;
-            Price cost_basis = entry_price * qty;
-            double pnl_pct = (cost_basis > 0.0) ? (pnl / cost_basis * 100.0) : 0.0;
-            nlohmann::json rt;
-            rt["id"] = std::to_string(static_cast<int>(j["round_trips"].size())) + "_" + symbol;
-            rt["entryDate"] = fmt_ts_datetime(buy.timestamp);
-            rt["exitDate"] = fmt_ts_datetime(sell.timestamp);
-            rt["entryPrice"] = entry_price;
-            rt["exitPrice"] = exit_price;
-            rt["quantity"] = qty;
-            rt["pnl"] = pnl;
-            rt["pnlPercent"] = pnl_pct;
-            rt["direction"] = "LONG";
-            rt["symbol"] = symbol;
-            if (!buy.regime.empty()) rt["regime"] = buy.regime;
-            if (buy.volatility_pct > 0.0) rt["volatility_pct"] = buy.volatility_pct;
-            if (buy.atr_at_entry > 0.0) rt["atr_at_entry"] = buy.atr_at_entry;
-            if (!buy.filter_reason.empty()) rt["filter_reason"] = buy.filter_reason;
-            j["round_trips"].push_back(rt);
+    struct FIFOLot {
+        Quantity quantity;
+        Price price;
+        Price commission_per_share;
+        Timestamp timestamp;
+        std::string regime;
+        double volatility_pct;
+        double atr_at_entry;
+        std::string filter_reason;
+    };
+    std::unordered_map<std::string, std::deque<FIFOLot>> open_lots;
+
+    std::vector<Fill> sorted_trades = trade_history;
+    std::sort(sorted_trades.begin(), sorted_trades.end(),
+              [](const Fill& a, const Fill& b) { return a.timestamp < b.timestamp; });
+
+    for (const auto& f : sorted_trades) {
+        if (f.quantity <= 0 || f.price <= 0.0) continue;
+
+        if (f.side == OrderSide::BUY) {
+            Price comm_per_share = (f.quantity > 0) ? (f.commission / f.quantity) : 0.0;
+            open_lots[f.symbol].push_back(FIFOLot{
+                f.quantity,
+                f.price,
+                comm_per_share,
+                f.timestamp,
+                f.regime,
+                f.volatility_pct,
+                f.atr_at_entry,
+                f.filter_reason
+            });
+        } else if (f.side == OrderSide::SELL) {
+            Quantity remaining = f.quantity;
+            Price sell_comm_per_share = (f.quantity > 0) ? (f.commission / f.quantity) : 0.0;
+            auto& lots = open_lots[f.symbol];
+
+            while (remaining > 0 && !lots.empty()) {
+                FIFOLot& lot = lots.front();
+                Quantity matched = std::min(remaining, lot.quantity);
+                Price entry_price = lot.price;
+                Price exit_price = f.price;
+                Price buy_comm = lot.commission_per_share * matched;
+                Price sell_comm = sell_comm_per_share * matched;
+                Price pnl = (exit_price - entry_price) * matched - buy_comm - sell_comm;
+                Price cost_basis = entry_price * matched;
+                double pnl_pct = (cost_basis > 0.0) ? (pnl / cost_basis * 100.0) : 0.0;
+
+                nlohmann::json rt;
+                rt["id"] = std::to_string(static_cast<int>(j["round_trips"].size())) + "_" + f.symbol;
+                rt["entryDate"] = fmt_ts_datetime(lot.timestamp);
+                rt["exitDate"] = fmt_ts_datetime(f.timestamp);
+                rt["entryPrice"] = entry_price;
+                rt["exitPrice"] = exit_price;
+                rt["quantity"] = matched;
+                rt["pnl"] = pnl;
+                rt["pnlPercent"] = pnl_pct;
+                rt["direction"] = "LONG";
+                rt["symbol"] = f.symbol;
+                if (!lot.regime.empty()) rt["regime"] = lot.regime;
+                if (lot.volatility_pct > 0.0) rt["volatility_pct"] = lot.volatility_pct;
+                if (lot.atr_at_entry > 0.0) rt["atr_at_entry"] = lot.atr_at_entry;
+                if (!lot.filter_reason.empty()) rt["filter_reason"] = lot.filter_reason;
+                j["round_trips"].push_back(rt);
+
+                lot.quantity -= matched;
+                remaining -= matched;
+                if (lot.quantity <= 0) {
+                    lots.pop_front();
+                }
+            }
         }
     }
     
@@ -953,8 +1054,14 @@ nlohmann::json BacktestResult::to_json() const {
     for (const auto& point : equity_curve) {
         nlohmann::json point_json;
         auto time_t = std::chrono::system_clock::to_time_t(point.first);
+        std::tm tm_utc{};
+#if defined(_WIN32)
+        gmtime_s(&tm_utc, &time_t);
+#else
+        gmtime_r(&time_t, &tm_utc);
+#endif
         std::ostringstream oss;
-        oss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+        oss << std::put_time(&tm_utc, "%Y-%m-%d");
         point_json["timestamp"] = oss.str();
         point_json["value"] = point.second;
         j["equity_curve"].push_back(point_json);
@@ -999,16 +1106,30 @@ void BacktestEngine::enable_logging(const std::string& log_file, spdlog::level::
 
 std::unique_ptr<BacktestEngine> BacktestEngine::create_from_config(const BacktestConfig& config) {
     auto engine = std::make_unique<BacktestEngine>();
-    
-    if (!config.validate()) {
+
+    BacktestConfig normalized = config;
+    normalized.normalize();
+
+    if (!normalized.validate()) {
         throw std::invalid_argument("Invalid backtest configuration");
     }
     
-    if (!engine->configure(config)) {
+    if (!engine->configure(normalized)) {
         throw std::runtime_error("Failed to configure backtest engine");
     }
     
     return engine;
+}
+
+void BacktestConfig::normalize() {
+    // Apply defaults so downstream components can rely on non-empty strings.
+    // CASH means fully-funded (no margin); MARGIN is reserved for future use.
+    if (account_type.empty()) {
+        account_type = "CASH";
+    }
+    if (market_type.empty()) {
+        market_type = "OTHER";
+    }
 }
 
 bool BacktestConfig::validate() const {
@@ -1034,16 +1155,6 @@ bool BacktestConfig::validate() const {
     
     if (strategy_name.empty()) {
         return false;
-    }
-
-    // Default account_type and market_type if not provided so older callers remain valid
-    // and downstream components can rely on non-empty strings.
-    // CASH means fully-funded (no margin); MARGIN is reserved for future use.
-    if (account_type.empty()) {
-        const_cast<BacktestConfig*>(this)->account_type = "CASH";
-    }
-    if (market_type.empty()) {
-        const_cast<BacktestConfig*>(this)->market_type = "OTHER";
     }
 
     return true;

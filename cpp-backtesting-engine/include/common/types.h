@@ -13,7 +13,6 @@ using Price = double;
 using Volume = long long;
 using Quantity = double;
 using Timestamp = std::chrono::system_clock::time_point;
-
 // OHLC data structure
 struct OHLC {
     Timestamp timestamp;
@@ -28,6 +27,8 @@ struct OHLC {
     OHLC(Timestamp ts, Price o, Price h, Price l, Price c, Volume v, const std::string& sym = "")
         : timestamp(ts), symbol(sym), open(o), high(h), low(l), close(c), volume(v) {}
 };
+
+using MarketData = OHLC;
 
 // Signal types
 enum class Signal {
@@ -50,17 +51,33 @@ enum class OrderSide {
     SELL
 };
 
+// Execution model controls how a market order's fill price is derived from a bar.
+// NEXT_BAR_OPEN is the recommended default for daily-bar backtests because it
+// eliminates intra-bar look-ahead: the strategy decides on bar t's close, and
+// the fill happens at bar t+1's open price.
+// CURRENT_BAR_OPEN and CURRENT_BAR_CLOSE simulate near-instant execution on the
+// decision bar. WORST_OF_BAR fills BUY at the bar's high and SELL at the bar's
+// low (pessimistic but contains intra-bar look-ahead; preserved for backward
+// compatibility with prior releases).
+enum class ExecutionModel {
+    NEXT_BAR_OPEN = 0,
+    CURRENT_BAR_OPEN = 1,
+    CURRENT_BAR_CLOSE = 2,
+    WORST_OF_BAR = 3
+};
+
 // Order structure
 struct Order {
-    int id;
+    int id = 0;
     std::string symbol;
-    OrderType type;
-    OrderSide side;
-    Quantity quantity;
-    Price price;  // For limit/stop orders
-    Price stop_price;  // For stop orders
-    Timestamp timestamp;
+    OrderType type = OrderType::MARKET;
+    OrderSide side = OrderSide::BUY;
+    Quantity quantity = 0.0;
+    Price price = 0.0;  // For limit/stop orders
+    Price stop_price = 0.0;  // For stop orders
+    Timestamp timestamp = std::chrono::system_clock::now();
     
+    Order() = default;
     Order(int order_id, const std::string& sym, OrderType t, OrderSide s, 
           Quantity qty, Price p = 0.0, Price sp = 0.0)
         : id(order_id), symbol(sym), type(t), side(s), quantity(qty), 
@@ -69,14 +86,15 @@ struct Order {
 
 // Fill structure with optional decision context (regime, volatility at entry)
 struct Fill {
-    int order_id;
+    int order_id = 0;
     std::string symbol;
-    OrderSide side;
-    Quantity quantity;
-    Price price;
-    Price commission;
-    Price slippage;
-    Timestamp timestamp;
+    OrderSide side = OrderSide::BUY;
+    Quantity quantity = 0.0;
+    Price price = 0.0;
+    Price commission = 0.0;
+    Price slippage = 0.0;
+    Price pnl = 0.0;
+    Timestamp timestamp = std::chrono::system_clock::now();
 
     // Decision context at entry (for "why it worked/failed" analysis)
     std::string regime;           // e.g. "Bull_Quiet", "Bear_Volatile"
@@ -84,6 +102,7 @@ struct Fill {
     double atr_at_entry = 0.0;    // Raw ATR value at entry
     std::string filter_reason;    // If trade was allowed despite filter, or "vol_filter" if suppressed
     
+    Fill() = default;
     Fill(int oid, const std::string& sym, OrderSide s, Quantity qty, 
          Price p, Price comm = 0.0, Price slip = 0.0)
         : order_id(oid), symbol(sym), side(s), quantity(qty), price(p),

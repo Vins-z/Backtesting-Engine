@@ -1,4 +1,5 @@
 #include "data/alpha_vantage_handler.h"
+#include "common/time_utils.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -1210,20 +1211,8 @@ bool AlphaVantageHandler::fetch_intraday_extended_and_resample_daily(const std::
 }
 
 Timestamp AlphaVantageHandler::parse_alpha_vantage_timestamp(const std::string& timestamp_str) const {
-    std::tm tm = {};
-    std::istringstream ss(timestamp_str);
-    
-    // Try parsing date-time format first (YYYY-MM-DD HH:MM:SS)
-    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-    
-    if (ss.fail()) {
-        // Try parsing date-only format (YYYY-MM-DD)
-        ss.clear();
-        ss.str(timestamp_str);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-    }
-    
-    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    // Parse as UTC for cross-host determinism.
+    return parse_utc_timestamp_or(timestamp_str, std::chrono::system_clock::time_point{});
 }
 
 bool AlphaVantageHandler::validate_json_response(const nlohmann::json& json, std::string& error_message) const {

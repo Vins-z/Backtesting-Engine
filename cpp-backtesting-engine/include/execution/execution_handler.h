@@ -4,6 +4,7 @@
 #include <queue>
 #include <memory>
 #include <random>
+#include <cstdint>
 
 namespace backtesting {
 
@@ -11,9 +12,16 @@ class ExecutionHandler {
 protected:
     Price commission_rate_;
     Price slippage_rate_;
+    std::uint64_t seed_ = 0;
+    ExecutionModel execution_model_ = ExecutionModel::WORST_OF_BAR;
+    mutable std::mt19937 rng_;
+    mutable std::uniform_real_distribution<double> unit_dist_{0.0, 1.0};
     
 public:
-    ExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001);
+    ExecutionHandler(Price commission_rate = 0.001,
+                     Price slippage_rate = 0.001,
+                     std::uint64_t seed = 0,
+                     ExecutionModel model = ExecutionModel::WORST_OF_BAR);
     virtual ~ExecutionHandler() = default;
     
     // Execute an order and return a fill
@@ -28,6 +36,7 @@ public:
     // Configuration methods
     virtual void set_commission_rate(Price rate) { commission_rate_ = rate; }
     virtual void set_slippage_rate(Price rate) { slippage_rate_ = rate; }
+    void set_execution_model(ExecutionModel model) { execution_model_ = model; }
     
     // Get execution statistics
     virtual std::unordered_map<std::string, double> get_execution_stats() const = 0;
@@ -35,6 +44,14 @@ public:
     // Get current rates
     Price get_commission_rate() const { return commission_rate_; }
     Price get_slippage_rate() const { return slippage_rate_; }
+    ExecutionModel get_execution_model() const { return execution_model_; }
+
+protected:
+    // Pick the base reference price from an OHLC bar based on the configured model.
+    // The engine is responsible for advancing the bar before calling execute_order()
+    // when NEXT_BAR_OPEN is configured; from the handler's perspective NEXT_BAR_OPEN
+    // and CURRENT_BAR_OPEN therefore both resolve to bar.open.
+    Price base_price_for_bar(OrderSide side, const OHLC& bar) const;
 };
 
 // Simple execution handler with fixed costs
@@ -60,7 +77,10 @@ private:
     Price calculate_slippage_with_volume(OrderSide side, Price price, Volume volume) const;
     
 public:
-    SimpleExecutionHandler(Price commission_rate = 0.001, Price slippage_rate = 0.001);
+    SimpleExecutionHandler(Price commission_rate = 0.001,
+                           Price slippage_rate = 0.001,
+                           std::uint64_t seed = 0,
+                           ExecutionModel model = ExecutionModel::WORST_OF_BAR);
     
     Fill execute_order(const Order& order, const OHLC& current_data) override;
     
@@ -110,7 +130,9 @@ public:
                             Price min_commission = 1.0,
                             Price max_commission = 0.005,
                             Price slippage_rate = 0.001,
-                            Price market_impact_factor = 0.001);
+                            Price market_impact_factor = 0.001,
+                            std::uint64_t seed = 0,
+                            ExecutionModel model = ExecutionModel::WORST_OF_BAR);
     
     Fill execute_order(const Order& order, const OHLC& current_data) override;
     

@@ -1,4 +1,5 @@
 #include "data/polygon_handler.h"
+#include "common/time_utils.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -441,6 +442,17 @@ bool PolygonHandler::load_from_cache(const std::string& symbol, const std::strin
             std::ifstream file(cache_file);
             nlohmann::json cache_json;
             file >> cache_json;
+
+            // Validate requested date range against cache metadata to avoid returning mismatched data.
+            if (cache_json.contains("start_date") && cache_json["start_date"].is_string() &&
+                cache_json.contains("end_date") && cache_json["end_date"].is_string()) {
+                const std::string cached_start = cache_json["start_date"].get<std::string>();
+                const std::string cached_end = cache_json["end_date"].get<std::string>();
+                if ((!start_date.empty() && cached_start != start_date) ||
+                    (!end_date.empty() && cached_end != end_date)) {
+                    return false;
+                }
+            }
             
             std::vector<OHLC> cached_data;
             for (const auto& item : cache_json["data"]) {
@@ -531,19 +543,12 @@ std::string PolygonHandler::get_cache_filename(const std::string& symbol) const 
 }
 
 Timestamp PolygonHandler::parse_polygon_timestamp(const std::string& timestamp_str) const {
-    // Polygon format: "2023-01-15" or Unix timestamp
+    // Polygon returns either a Unix epoch in milliseconds or a date string.
     try {
         int64_t timestamp_ms = std::stoll(timestamp_str);
         return std::chrono::system_clock::time_point(std::chrono::milliseconds(timestamp_ms));
     } catch (...) {
-        // Try date format
-        std::tm tm = {};
-        std::istringstream ss(timestamp_str);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (ss.fail()) {
-            return std::chrono::system_clock::now();
-        }
-        return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        return parse_utc_timestamp_or(timestamp_str, std::chrono::system_clock::now());
     }
 }
 

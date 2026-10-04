@@ -1,0 +1,65 @@
+name: C/C++ CMake CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          pkg-config \
+          libyaml-cpp-dev \
+          nlohmann-json3-dev \
+          libspdlog-dev \
+          libcurl4-openssl-dev \
+          libeigen3-dev
+        # Optional (indicators may be unavailable if missing)
+        sudo apt-get install -y libta-lib-dev || true
+
+    - name: Detect source directory
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -d "${{ github.workspace }}/cpp-backtesting-engine" ]; then
+          SRC_DIR="${{ github.workspace }}/cpp-backtesting-engine"
+        elif [ -d "${{ github.workspace }}/Backtesting/cpp-backtesting-engine" ]; then
+          SRC_DIR="${{ github.workspace }}/Backtesting/cpp-backtesting-engine"
+        else
+          echo "Could not find cpp-backtesting-engine in repo."
+          ls -la "${{ github.workspace }}"
+          exit 1
+        fi
+        BUILD_DIR="${SRC_DIR}/build-ci"
+        echo "SRC_DIR=$SRC_DIR" >> "$GITHUB_ENV"
+        echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+
+    - name: Configure
+      run: cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release -DBACKTESTINGENGINE_BUILD_EXAMPLES=OFF
+
+    - name: Build
+      # Use low parallelism to avoid OOM/killed compiler on GitHub runners
+      run: cmake --build "${BUILD_DIR}" --parallel 2 --config Release
+
+    - name: Test
+      run: ctest --test-dir "${BUILD_DIR}" --output-on-failure
+
+    - name: Install (for consumer test)
+      run: cmake --install "${BUILD_DIR}" --prefix "${BUILD_DIR}/install"
+
+    - name: Configure consumer (find_package)
+      run: cmake -S "${SRC_DIR}/consumer" -B "${BUILD_DIR}/consumer-build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${BUILD_DIR}/install"
+
+    - name: Build consumer
+      run: cmake --build "${BUILD_DIR}/consumer-build" --parallel 2 --config Release

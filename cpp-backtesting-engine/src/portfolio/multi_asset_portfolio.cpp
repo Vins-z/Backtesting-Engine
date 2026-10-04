@@ -59,11 +59,11 @@ Eigen::MatrixXd MultiAssetPortfolio::compute_correlation_matrix(
         return Eigen::MatrixXd();
     }
 
-    // Truncate all to common length
+    // Truncate all to common trailing length (most recent common window)
     const int m = static_cast<int>(series.size());
     Eigen::MatrixXd mat(min_len, m);
     for (int j = 0; j < m; ++j) {
-        mat.col(j) = series[j].head(min_len);
+        mat.col(j) = series[j].tail(min_len);
     }
 
     // Demean

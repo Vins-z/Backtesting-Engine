@@ -15,6 +15,10 @@ ReplayEngine::ReplayEngine()
       speed_multiplier_(1.0), should_stop_(false) {
 }
 
+ReplayEngine::~ReplayEngine() {
+    stop();
+}
+
 bool ReplayEngine::configure(const ReplayConfig& config) {
     if (!config.validate()) {
         return false;
@@ -46,11 +50,10 @@ bool ReplayEngine::configure(const ReplayConfig& config) {
 
 bool ReplayEngine::load_data() {
     try {
-        auto data = data_handler_->get_historical_data(
-            config_.symbol,
-            config_.start_date,
-            config_.end_date
-        );
+        if (!data_handler_->load_symbol_data(config_.symbol, config_.start_date, config_.end_date)) {
+            return false;
+        }
+        auto data = data_handler_->get_historical_data(config_.symbol);
         
         if (data.empty()) {
             return false;
@@ -105,7 +108,11 @@ void ReplayEngine::stop() {
     is_paused_ = false;
     
     if (replay_thread_.joinable()) {
-        replay_thread_.join();
+        if (std::this_thread::get_id() == replay_thread_.get_id()) {
+            replay_thread_.detach();
+        } else {
+            replay_thread_.join();
+        }
     }
     
     emit_event("replay_stopped", nlohmann::json{});
@@ -154,8 +161,9 @@ bool ReplayEngine::place_order(const std::string& symbol, OrderSide side, Quanti
     }
     
     // Create order
+    static std::atomic<int> next_replay_order_id{1};
     Order order;
-    order.id = portfolio_manager_->generate_order_id();
+    order.id = next_replay_order_id++;
     order.symbol = symbol;
     order.side = side;
     order.quantity = quantity;
@@ -169,12 +177,15 @@ bool ReplayEngine::place_order(const std::string& symbol, OrderSide side, Quanti
     if (fill.quantity > 0) {
         portfolio_manager_->update_fill(fill);
         
+        auto ts_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            current_data.timestamp.time_since_epoch()).count();
+
         emit_event("order_filled", nlohmann::json{
             {"symbol", symbol},
             {"side", side == OrderSide::BUY ? "BUY" : "SELL"},
             {"quantity", fill.quantity},
             {"price", fill.price},
-            {"timestamp", current_data.timestamp}
+            {"timestamp", ts_sec}
         });
         
         return true;
@@ -198,16 +209,26 @@ Price ReplayEngine::get_portfolio_value() const {
     if (!portfolio_manager_) {
         return 0.0;
     }
-    
-    OHLC current_data = get_current_market_data();
-    return portfolio_manager_->get_total_value(current_data);
+    return portfolio_manager_->get_total_value();
 }
 
 std::vector<Position> ReplayEngine::get_positions() const {
     if (!portfolio_manager_) {
         return {};
     }
-    return portfolio_manager_->get_positions();
+    std::vector<Position> result;
+    auto pos_map = portfolio_manager_->get_all_positions();
+    result.reserve(pos_map.size());
+    for (const auto& [sym, ep] : pos_map) {
+        Position pos;
+        pos.symbol = ep.symbol;
+        pos.quantity = ep.quantity;
+        pos.avg_price = ep.avg_price;
+        pos.market_value = ep.market_value;
+        pos.unrealized_pnl = ep.unrealized_pnl;
+        result.push_back(pos);
+    }
+    return result;
 }
 
 void ReplayEngine::set_event_callback(ReplayEventCallback callback) {
@@ -281,9 +302,12 @@ void ReplayEngine::process_bar(size_t bar_index) {
     portfolio_manager_->update_market_data(bar.symbol, bar);
     
     // Emit bar update event
+    auto ts_sec = std::chrono::duration_cast<std::chrono::seconds>(
+        bar.timestamp.time_since_epoch()).count();
+
     emit_event("bar_update", nlohmann::json{
         {"symbol", bar.symbol},
-        {"timestamp", bar.timestamp},
+        {"timestamp", ts_sec},
         {"open", bar.open},
         {"high", bar.high},
         {"low", bar.low},
@@ -306,10 +330,15 @@ void ReplayEngine::emit_event(const std::string& type, const nlohmann::json& dat
 }
 
 std::string ReplayEngine::format_date(const Timestamp& ts) const {
-    std::time_t time = static_cast<std::time_t>(ts);
-    std::tm* tm = std::localtime(&time);
+    std::time_t time = std::chrono::system_clock::to_time_t(ts);
+    std::tm tm_utc{};
+#if defined(_WIN32)
+    gmtime_s(&tm_utc, &time);
+#else
+    gmtime_r(&time, &tm_utc);
+#endif
     std::ostringstream oss;
-    oss << std::put_time(tm, "%Y-%m-%d");
+    oss << std::put_time(&tm_utc, "%Y-%m-%d");
     return oss.str();
 }
 

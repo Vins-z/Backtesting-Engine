@@ -1,0 +1,5 @@
+test_csv_date_filter 1 0.901578
+test_risk_exposure_units 1 0.713232
+test_determinism_execution_seed 1 0.619504
+test_realized_pnl_fifo 1 0.645587
+---

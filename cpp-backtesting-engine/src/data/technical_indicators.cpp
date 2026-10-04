@@ -212,15 +212,40 @@ IndicatorResult TechnicalIndicatorsCalculator::calculate_macd(const std::vector<
     
     auto closes = extract_closes(data);
     
-    // Calculate EMA 12 and EMA 26
-    double ema12 = calculate_ema(data, 12).current_value;
-    double ema26 = calculate_ema(data, 26).current_value;
+    // Compute running EMA 12 and EMA 26 across all bars
+    double mult12 = 2.0 / (12 + 1);
+    double mult26 = 2.0 / (26 + 1);
+    double ema12 = closes[0];
+    double ema26 = closes[0];
     
-    // MACD line
-    double macd_line = ema12 - ema26;
+    std::vector<double> macd_series;
+    macd_series.reserve(closes.size());
     
-    // Signal line (EMA 9 of MACD line) - simplified
-    double signal_line = macd_line * 0.9; // Simplified signal line
+    for (size_t i = 0; i < closes.size(); ++i) {
+        if (i > 0) {
+            ema12 = (closes[i] * mult12) + (ema12 * (1.0 - mult12));
+            ema26 = (closes[i] * mult26) + (ema26 * (1.0 - mult26));
+        }
+        if (i >= 25) {
+            macd_series.push_back(ema12 - ema26);
+        }
+    }
+    
+    if (macd_series.empty()) {
+        result.current_value = 0.0;
+        result.signal = "insufficient_data";
+        return result;
+    }
+    
+    double macd_line = macd_series.back();
+    
+    // Calculate 9-period EMA of MACD series for the true signal line
+    double mult9 = 2.0 / (9 + 1);
+    double signal_line = macd_series[0];
+    for (size_t i = 1; i < macd_series.size(); ++i) {
+        signal_line = (macd_series[i] * mult9) + (signal_line * (1.0 - mult9));
+    }
+    
     double histogram = macd_line - signal_line;
     
     result.current_value = macd_line;
