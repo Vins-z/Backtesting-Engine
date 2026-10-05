@@ -67,3 +67,32 @@ target_link_libraries(your_target PRIVATE BacktestingEngine::backtesting_engine_
 
 Download the release tarball/zip, extract it, then follow **Option A** (build + install + `find_package`).
 
+## Option D: vcpkg (Package Manager)
+
+### Via vcpkg overlay ports
+
+```bash
+git clone https://github.com/Vins-z/vcpkg-overlay-ports.git
+vcpkg install --overlay-ports=./vcpkg-overlay-ports/ports backtesting-engine
+```
+
+Or once merged upstream:
+
+```bash
+vcpkg install backtesting-engine
+```
+
+### Consumer CMake
+
+```cmake
+find_package(BacktestingEngine CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE BacktestingEngine::backtesting_engine_shared)
+```
+
+Configure your project with the vcpkg CMake toolchain:
+
+```bash
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[vcpkg-root]/scripts/buildsystems/vcpkg.cmake
+cmake --build build
+```
+
