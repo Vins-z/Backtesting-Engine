@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(BacktestingEngine VERSION 1.2.0 LANGUAGES CXX)
 enable_testing()
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Set C++20 standard
 set(CMAKE_CXX_STANDARD 20)
