@@ -255,6 +255,10 @@ endif()
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "cli" EXCLUDE
+    PATTERN "multi_source_data_handler.h" EXCLUDE
+    PATTERN "enhanced_execution_handler.h" EXCLUDE
+    PATTERN "machine_learning_strategy.h" EXCLUDE
 )
 
 # CMake package export (find_package)
