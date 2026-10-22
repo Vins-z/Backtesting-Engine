@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BacktestingEngine VERSION 1.2.0 LANGUAGES CXX)
+project(BacktestingEngine VERSION 1.2.1 LANGUAGES CXX)
 enable_testing()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
